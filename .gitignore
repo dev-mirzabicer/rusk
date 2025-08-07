@@ -26,4 +26,4 @@ target
 config.toml
 
 # Local database file
-task_manager.db
+rusk.db
