@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "crates/task-core",
-    "crates/task-cli",
+    "crates/rusk-core",
+    "crates/rusk-cli",
 ]
 resolver = "2"
 

@@ -1608,6 +1608,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusk-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "chrono-english",
+ "chrono-humanize",
+ "clap",
+ "comfy-table",
+ "dialoguer",
+ "figment",
+ "owo-colors",
+ "rusk-core",
+ "serde",
+ "serde_plain",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "rusk-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "chrono-english",
+ "chrono-tz 0.9.0",
+ "rrule",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2184,46 +2224,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.104",
-]
-
-[[package]]
-name = "task-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "chrono-english",
- "chrono-humanize",
- "clap",
- "comfy-table",
- "dialoguer",
- "figment",
- "owo-colors",
- "serde",
- "serde_plain",
- "task-core",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "task-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "chrono-english",
- "chrono-tz 0.9.0",
- "rrule",
- "serde",
- "serde_json",
- "serde_with",
- "sqlx",
- "thiserror",
- "tokio",
- "uuid",
 ]
 
 [[package]]
