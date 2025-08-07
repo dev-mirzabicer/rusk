@@ -10,7 +10,7 @@ impl Config {
     pub fn new() -> Result<Self, figment::Error> {
         Figment::new()
             .merge(Toml::file("config.toml"))
-            .merge(Env::prefixed("TASK_"))
+            .merge(Env::prefixed("RUSK_"))
             .extract()
     }
 }

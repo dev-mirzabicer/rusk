@@ -20,8 +20,11 @@ pub enum CoreError {
     #[error("Task is blocked by: {0}")]
     TaskBlocked(String),
 
-    #[error("Ambiguous short ID: {0}")]
-    AmbiguousId(String),
+    #[error("Ambiguous short ID. Did you mean one of these?")]
+    AmbiguousId(Vec<(String, String)>), // Vec of (ID, Name)
+
+    #[error("Circular dependency detected: Task '{0}' cannot depend on '{1}'.")]
+    CircularDependency(String, String),
 
     #[error("An unknown error has occurred.")]
     Unknown,

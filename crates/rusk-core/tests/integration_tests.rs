@@ -1,6 +1,6 @@
-use task_core::db::establish_connection;
-use task_core::models::{NewTaskData, Filter, UpdateTaskData, TaskPriority};
-use task_core::repository::{Repository, SqliteRepository};
+use rusk_core::db::establish_connection;
+use rusk_core::models::{NewTaskData, Filter, UpdateTaskData, TaskPriority};
+use rusk_core::repository::{Repository, SqliteRepository};
 
 #[tokio::test]
 async fn test_add_and_find_task() {

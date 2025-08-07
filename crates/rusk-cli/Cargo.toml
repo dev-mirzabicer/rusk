@@ -1,7 +1,11 @@
 [package]
-name = "task-cli"
+name = "rusk-cli"
 version = "0.1.0"
 edition = "2021"
+
+[[bin]]
+name = "rusk"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
@@ -19,4 +23,4 @@ serde = { version = "1.0", features = ["derive"] }
 serde_plain = "1.0"
 figment = { version = "0.10", features = ["toml", "env"] }
 
-task-core = { path = "../task-core" }
+rusk-core = { path = "../rusk-core" }

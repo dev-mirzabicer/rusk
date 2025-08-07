@@ -1,5 +1,5 @@
 use anyhow::Result;
-use task_core::repository::Repository;
+use rusk_core::repository::Repository;
 use uuid::Uuid;
 
 pub async fn delete_task(repo: &impl Repository, task_id: Uuid) -> Result<()> {

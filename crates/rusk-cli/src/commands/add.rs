@@ -1,6 +1,6 @@
 use anyhow::Result;
-use task_core::models::NewTaskData;
-use task_core::repository::Repository;
+use rusk_core::models::NewTaskData;
+use rusk_core::repository::Repository;
 use crate::cli::AddCommand;
 use crate::parser::parse_due_date;
 use uuid::Uuid;

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use chrono_humanize::Humanize;
-use comfy_table::{Cell, Color, Row, Table};
-use task_core::models::{TaskPriority, TaskStatus};
+use comfy_table::{Attribute, Cell, Color, Row, Table};
+use rusk_core::models::{TaskPriority, TaskStatus};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -38,21 +38,28 @@ pub fn display_tasks(tasks: &[ViewTask]) {
         row.add_cell(Cell::new(&task.id.to_string()[..7]));
 
         let indentation = "  ".repeat(task.depth);
-        let name_cell = Cell::new(format!("{}{}", indentation, &task.name));
+        let mut name_cell = Cell::new(format!("{}{}", indentation, &task.name));
 
-        let name_cell = match task.status {
-            TaskStatus::Completed | TaskStatus::Cancelled => name_cell.fg(Color::DarkGrey),
-            TaskStatus::Pending => match task.priority {
-                TaskPriority::High => name_cell.fg(Color::Red),
-                TaskPriority::Medium => name_cell.fg(Color::Yellow),
-                TaskPriority::Low => name_cell.fg(Color::Green),
-                TaskPriority::None => name_cell,
-            },
+        // Style based on status and priority
+        match task.status {
+            TaskStatus::Completed | TaskStatus::Cancelled => {
+                name_cell = name_cell
+                    .add_attribute(Attribute::CrossedOut)
+                    .fg(Color::DarkGrey);
+            }
+            TaskStatus::Pending => {
+                name_cell = match task.priority {
+                    TaskPriority::High => name_cell.fg(Color::Red).add_attribute(Attribute::Bold),
+                    TaskPriority::Medium => name_cell.fg(Color::Yellow),
+                    TaskPriority::Low => name_cell.fg(Color::Green),
+                    TaskPriority::None => name_cell,
+                };
+            }
         };
         row.add_cell(name_cell);
 
-        let status_cell = Cell::new(format!("{:?}", task.status));
-        let status_cell = match task.status {
+        let mut status_cell = Cell::new(format!("{:?}", task.status));
+        status_cell = match task.status {
             TaskStatus::Completed => status_cell.fg(Color::Green),
             TaskStatus::Cancelled => status_cell.fg(Color::DarkGrey),
             TaskStatus::Pending => status_cell,
@@ -60,9 +67,19 @@ pub fn display_tasks(tasks: &[ViewTask]) {
         row.add_cell(status_cell);
 
         let due_date_cell = if let Some(due_at) = task.due_at {
+            let now = Utc::now();
+            let today = now.date_naive();
+            let due_date = due_at.date_naive();
+
             let humanized_due_at = due_at.humanize();
-            if due_at < Utc::now() && task.status == TaskStatus::Pending {
-                Cell::new(humanized_due_at).fg(Color::Red)
+            if task.status == TaskStatus::Pending {
+                if due_at < now {
+                    Cell::new(humanized_due_at).fg(Color::Red) // Overdue
+                } else if due_date == today {
+                    Cell::new(humanized_due_at).fg(Color::Yellow) // Due today
+                } else {
+                    Cell::new(humanized_due_at)
+                }
             } else {
                 Cell::new(humanized_due_at)
             }
@@ -82,6 +99,7 @@ pub fn display_tasks(tasks: &[ViewTask]) {
 
     println!("{table}");
 }
+
 
 pub fn display_projects(projects: &[ViewProject]) {
     if projects.is_empty() {

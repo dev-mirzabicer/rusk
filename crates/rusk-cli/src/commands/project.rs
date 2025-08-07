@@ -1,5 +1,5 @@
 use anyhow::Result;
-use task_core::repository::Repository;
+use rusk_core::repository::Repository;
 use crate::cli::{ProjectCommand, ProjectSubcommand, AddProjectCommand, DeleteProjectCommand};
 
 use crate::views::table::{display_projects, ViewProject};

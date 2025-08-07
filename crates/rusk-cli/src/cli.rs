@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
-use task_core::models::{TaskPriority, TaskStatus};
+use rusk_core::models::{TaskPriority, TaskStatus};
 
-/// A feature-rich, high-quality, robust CLI task management tool
+/// A feature-rich, high-quality, robust CLI rusk management tool
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
@@ -67,27 +67,39 @@ pub struct EditCommand {
 
     #[arg(long)]
     pub description: Option<String>,
+    #[arg(long, conflicts_with = "description")]
+    pub description_clear: bool,
 
     #[arg(long)]
     pub due: Option<String>,
+    #[arg(long, conflicts_with = "due")]
+    pub due_clear: bool,
 
     #[arg(long)]
     pub depends_on: Option<String>,
+    #[arg(long, conflicts_with = "depends_on")]
+    pub depends_on_clear: bool,
 
     #[arg(long, value_enum)]
     pub priority: Option<TaskPriority>,
 
     #[arg(long)]
     pub parent: Option<String>,
+    #[arg(long, conflicts_with = "parent")]
+    pub parent_clear: bool,
 
     #[arg(long)]
     pub recurrence: Option<String>,
+    #[arg(long, conflicts_with = "recurrence")]
+    pub recurrence_clear: bool,
 
     #[arg(long, value_enum)]
     pub status: Option<TaskStatus>,
 
     #[arg(long)]
     pub project: Option<String>,
+    #[arg(long, conflicts_with = "project")]
+    pub project_clear: bool,
 
     /// Add tags to the task
     #[arg(long, num_args = 1..)]

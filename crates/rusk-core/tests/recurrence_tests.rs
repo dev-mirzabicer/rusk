@@ -1,7 +1,7 @@
 use chrono::{TimeZone, Utc}; // Make sure TimeZone is imported
-use task_core::db::establish_connection;
-use task_core::models::{CompletionResult, NewTaskData};
-use task_core::repository::{Repository, SqliteRepository};
+use rusk_core::db::establish_connection;
+use rusk_core::models::{CompletionResult, NewTaskData};
+use rusk_core::repository::{Repository, SqliteRepository};
 
 #[tokio::test]
 // REMOVE the #[ignore] attribute to ensure this test always runs.

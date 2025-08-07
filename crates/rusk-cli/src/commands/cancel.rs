@@ -1,5 +1,5 @@
 use anyhow::Result;
-use task_core::repository::Repository;
+use rusk_core::repository::Repository;
 
 use crate::cli::CancelCommand;
 use crate::util::resolve_task_id;

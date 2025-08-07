@@ -1,5 +1,5 @@
 use anyhow::Result;
-use task_core::repository::Repository;
+use rusk_core::repository::Repository;
 use crate::cli::ListCommand;
 use crate::views::table::{display_tasks, ViewTask};
 use crate::config::Config;

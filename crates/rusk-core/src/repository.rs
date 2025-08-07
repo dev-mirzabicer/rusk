@@ -134,6 +134,27 @@ impl SqliteRepository {
         .await?;
 
         if let Some(depends_on_id) = data.depends_on {
+            if task.id == depends_on_id {
+                return Err(CoreError::InvalidInput(
+                    "A task cannot depend on itself.".to_string(),
+                ));
+            }
+
+            if self
+                .path_exists(&mut *tx, depends_on_id, task.id)
+                .await?
+            {
+                let depends_on_task_name = self
+                    .find_task_by_id_in_transaction(&mut *tx, depends_on_id)
+                    .await?
+                    .map(|t| t.name)
+                    .unwrap_or_else(|| depends_on_id.to_string());
+                return Err(CoreError::CircularDependency(
+                    task.name.clone(),
+                    depends_on_task_name,
+                ));
+            }
+
             sqlx::query("INSERT INTO task_dependencies (task_id, depends_on_id) VALUES ($1, $2)")
                 .bind(task.id)
                 .bind(depends_on_id)
@@ -152,6 +173,37 @@ impl SqliteRepository {
         }
 
         Ok(task)
+    }
+
+    /// Checks if a dependency path exists from a start_node to an end_node.
+    ///
+    /// This is used to detect circular dependencies. If a path exists from B to A,
+    /// then adding a dependency A -> B would create a cycle.
+    async fn path_exists<'a>(
+        &self,
+        tx: &mut Transaction<'a, Sqlite>,
+        start_node_id: Uuid,
+        end_node_id: Uuid,
+    ) -> Result<bool, CoreError> {
+        let path_found: Option<i32> = sqlx::query_scalar(
+            r#"
+            WITH RECURSIVE dependency_path (id) AS (
+                SELECT depends_on_id FROM task_dependencies WHERE task_id = $1
+                UNION ALL
+                SELECT td.depends_on_id
+                FROM task_dependencies td
+                JOIN dependency_path dp ON td.task_id = dp.id
+                WHERE td.depends_on_id IS NOT NULL
+            )
+            SELECT 1 FROM dependency_path WHERE id = $2 LIMIT 1;
+            "#,
+        )
+        .bind(start_node_id)
+        .bind(end_node_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        Ok(path_found.is_some())
     }
 }
 
@@ -555,6 +607,48 @@ impl Repository for SqliteRepository {
             updated = true;
         }
 
+        if let Some(depends_on_option) = data.depends_on {
+            // First, remove any existing dependency for this task.
+            sqlx::query("DELETE FROM task_dependencies WHERE task_id = $1")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+
+            if let Some(depends_on_id) = depends_on_option {
+                // A new dependency is being set.
+                if id == depends_on_id {
+                    return Err(CoreError::InvalidInput(
+                        "A task cannot depend on itself.".to_string(),
+                    ));
+                }
+
+                if self.path_exists(&mut tx, depends_on_id, id).await? {
+                    let task_name = self
+                        .find_task_by_id_in_transaction(&mut tx, id)
+                        .await?
+                        .map(|t| t.name)
+                        .unwrap_or_else(|| id.to_string());
+                    let depends_on_task_name = self
+                        .find_task_by_id_in_transaction(&mut tx, depends_on_id)
+                        .await?
+                        .map(|t| t.name)
+                        .unwrap_or_else(|| depends_on_id.to_string());
+                    return Err(CoreError::CircularDependency(
+                        task_name,
+                        depends_on_task_name,
+                    ));
+                }
+
+                sqlx::query("INSERT INTO task_dependencies (task_id, depends_on_id) VALUES ($1, $2)")
+                    .bind(id)
+                    .bind(depends_on_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            // If depends_on_option is None, the dependency is just cleared, which we already did.
+            updated = true;
+        }
+
         if let Some(tags_to_add) = data.add_tags {
             if !tags_to_add.is_empty() {
                 let mut query_builder: QueryBuilder<sqlx::Sqlite> =
@@ -570,6 +664,7 @@ impl Repository for SqliteRepository {
             if !tags_to_remove.is_empty() {
                 let mut query_builder: QueryBuilder<sqlx::Sqlite> =
                     QueryBuilder::new("DELETE FROM task_tags WHERE task_id = $1 AND tag_name IN (");
+                query_builder.push_bind(id);
                 let mut separated = query_builder.separated(", ");
                 for tag in tags_to_remove.iter() {
                     separated.push_bind(tag);
@@ -582,12 +677,10 @@ impl Repository for SqliteRepository {
         if updated {
             qb.push(", updated_at = ");
             qb.push_bind(Utc::now());
+            qb.push(" WHERE id = ");
+            qb.push_bind(id);
+            qb.build().execute(&mut *tx).await?;
         }
-
-        qb.push(" WHERE id = ");
-        qb.push_bind(id);
-
-        qb.build().execute(&mut *tx).await?;
 
         let updated_task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id = $1")
             .bind(id)

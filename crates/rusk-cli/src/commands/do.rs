@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
-use task_core::error::CoreError;
-use task_core::models::CompletionResult;
-use task_core::repository::Repository;
+use rusk_core::error::CoreError;
+use rusk_core::models::CompletionResult;
+use rusk_core::repository::Repository;
 
 use crate::cli::DoCommand;
 use crate::util::resolve_task_id;

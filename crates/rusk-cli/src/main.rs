@@ -1,9 +1,9 @@
 use clap::Parser;
 use dialoguer::Confirm;
 use owo_colors::{OwoColorize, Style};
-use task_core::db;
-use task_core::error::CoreError;
-use task_core::repository::{Repository, SqliteRepository};
+use rusk_core::db;
+use rusk_core::error::CoreError;
+use rusk_core::repository::{Repository, SqliteRepository};
 use util::resolve_task_id;
 
 mod cli;
@@ -14,7 +14,7 @@ mod parser;
 mod util;
 mod views;
 
-const DATABASE_URL: &str = "task_manager.db";
+const DATABASE_URL: &str = "rusk.db";
 
 #[tokio::main]
 async fn main() {
@@ -105,15 +105,23 @@ fn handle_error(err: anyhow::Error) {
                     s.yellow()
                 );
             }
-            CoreError::AmbiguousId(s) => {
-                eprintln!(
-                    "{} Ambiguous ID prefix: {}. Please be more specific.",
-                    "Error:".style(error_style),
-                    s.yellow()
-                );
+            CoreError::AmbiguousId(tasks) => {
+                eprintln!("{}", "Error: Ambiguous ID.".style(error_style));
+                eprintln!("Did you mean one of these?");
+                for (id, name) in tasks {
+                    eprintln!("  {} ({})", id.yellow(), name);
+                }
             }
             CoreError::InvalidInput(s) => {
                 eprintln!("{} Invalid input: {}", "Error:".style(error_style), s);
+            }
+            CoreError::CircularDependency(task, depends_on) => {
+                eprintln!(
+                    "{} Circular dependency detected: Task '{}' cannot depend on '{}'",
+                    "Error:".style(error_style),
+                    task.yellow(),
+                    depends_on.yellow()
+                );
             }
             _ => eprintln!("{} {}", "Error:".style(error_style), err),
         }

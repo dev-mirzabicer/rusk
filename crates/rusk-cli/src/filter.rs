@@ -1,6 +1,6 @@
 use crate::parser::parse_due_date;
 use anyhow::{anyhow, Result};
-use task_core::models::{DueDate, Filter, TaskPriority, TaskStatus};
+use rusk_core::models::{DueDate, Filter, TaskPriority, TaskStatus};
 
 pub fn parse_filters(filters: Vec<String>) -> Result<Vec<Filter>> {
     let mut parsed_filters = Vec::new();
