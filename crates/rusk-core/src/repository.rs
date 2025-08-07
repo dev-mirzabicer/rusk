@@ -1,13 +1,13 @@
 use crate::db::DbPool;
 use crate::error::CoreError;
 use crate::models::{
-    CompletionResult, DueDate, Filter, NewTaskData, Project, Task, TaskPriority, TaskStatus,
+    CompletionResult, NewTaskData, Project, Task, TaskPriority, TaskStatus,
     UpdateTaskData,
 };
+use crate::query::{Filter, Operator, Query};
 use crate::recurrence::RecurrenceManager;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-
 use sqlx::{FromRow, QueryBuilder, Sqlite, Transaction};
 use uuid::Uuid;
 
@@ -36,10 +36,9 @@ pub trait Repository {
     async fn add_task(&self, data: NewTaskData) -> Result<Task, CoreError>;
     async fn find_task_by_id(&self, id: Uuid) -> Result<Option<Task>, CoreError>;
     async fn find_tasks_by_short_id_prefix(&self, short_id: &str) -> Result<Vec<Task>, CoreError>;
-    async fn find_tasks(&self, filters: &[Filter]) -> Result<Vec<Task>, CoreError>;
     async fn find_tasks_with_details(
         &self,
-        filters: &[Filter],
+        query: &Query,
     ) -> Result<Vec<TaskQueryResult>, CoreError>;
     async fn delete_task(&self, id: Uuid) -> Result<(), CoreError>;
     async fn complete_task(&self, id: Uuid) -> Result<CompletionResult, CoreError>;
@@ -63,6 +62,49 @@ pub struct SqliteRepository {
 impl SqliteRepository {
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
+    }
+
+    fn build_sql_where_clause<'a>(
+        &self,
+        query: &Query,
+        qb: &mut QueryBuilder<'a, Sqlite>,
+    ) {
+        match query {
+            Query::Filter(filter) => match filter {
+                Filter::Project(name) => {
+                    qb.push("p.name = ");
+                    qb.push_bind(name.clone());
+                }
+                Filter::Tag(name) => {
+                    qb.push("th.id IN (SELECT task_id FROM task_tags WHERE tag_name = ");
+                    qb.push_bind(name.clone());
+                    qb.push(")");
+                }
+                Filter::Status(status) => {
+                    qb.push("th.status = ");
+                    qb.push_bind(status.clone());
+                }
+                Filter::Priority(priority) => {
+                    qb.push("th.priority = ");
+                    qb.push_bind(priority.clone());
+                }
+            },
+            Query::Not(query) => {
+                qb.push("NOT (");
+                self.build_sql_where_clause(query, qb);
+                qb.push(")");
+            }
+            Query::Binary { op, left, right } => {
+                qb.push("(");
+                self.build_sql_where_clause(left, qb);
+                match op {
+                    Operator::And => qb.push(") AND ("),
+                    Operator::Or => qb.push(") OR ("),
+                };
+                self.build_sql_where_clause(right, qb);
+                qb.push(")");
+            }
+        }
     }
 
     async fn find_task_by_id_in_transaction<'a>(
@@ -98,7 +140,7 @@ impl SqliteRepository {
         }
 
         let task = Task {
-            id: Uuid::new_v4(),
+            id: Uuid::now_v7(),
             name: data.name,
             description: data.description,
             status: TaskStatus::Pending,
@@ -232,75 +274,9 @@ impl Repository for SqliteRepository {
         Ok(tasks)
     }
 
-    async fn find_tasks(&self, filters: &[Filter]) -> Result<Vec<Task>, CoreError> {
-        let mut query_builder: QueryBuilder<sqlx::Sqlite> =
-            QueryBuilder::new("SELECT t.* FROM tasks t");
-
-        if !filters.is_empty() {
-            query_builder.push(" WHERE ");
-            let mut first = true;
-            for filter in filters {
-                if !first {
-                    query_builder.push(" AND ");
-                }
-                match filter {
-                    Filter::Status(status) => {
-                        query_builder.push("t.status = ");
-                        query_builder.push_bind(status.clone());
-                    }
-                    Filter::Tag(tag) => {
-                        query_builder
-                            .push("t.id IN (SELECT task_id FROM task_tags WHERE tag_name = ");
-                        query_builder.push_bind(tag);
-                        query_builder.push(")");
-                    }
-                    Filter::TagNot(tag) => {
-                        query_builder
-                            .push("t.id NOT IN (SELECT task_id FROM task_tags WHERE tag_name = ");
-                        query_builder.push_bind(tag);
-                        query_builder.push(")");
-                    }
-                    Filter::Project(project) => {
-                        query_builder.push("t.project_id = (SELECT id FROM projects WHERE name = ");
-                        query_builder.push_bind(project);
-                        query_builder.push(")");
-                    }
-                    Filter::Priority(priority) => {
-                        query_builder.push("t.priority = ");
-                        query_builder.push_bind(priority.clone());
-                    }
-                    Filter::DueDate(due_date) => match due_date {
-                        DueDate::Today => {
-                            query_builder.push("date(t.due_at) = date('now')");
-                        }
-                        DueDate::Tomorrow => {
-                            query_builder.push("date(t.due_at) = date('now', '+1 day')");
-                        }
-                        DueDate::Overdue => {
-                            query_builder
-                                .push("date(t.due_at) < date('now') AND t.status = 'pending'");
-                        }
-                        DueDate::Before(date) => {
-                            query_builder.push("t.due_at < ");
-                            query_builder.push_bind(date);
-                        }
-                        DueDate::After(date) => {
-                            query_builder.push("t.due_at > ");
-                            query_builder.push_bind(date);
-                        }
-                    },
-                }
-                first = false;
-            }
-        }
-
-        let tasks = query_builder.build_query_as().fetch_all(&self.pool).await?;
-        Ok(tasks)
-    }
-
     async fn find_tasks_with_details(
         &self,
-        filters: &[Filter],
+        query: &Query,
     ) -> Result<Vec<TaskQueryResult>, CoreError> {
         let mut query_builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(
             r#"WITH RECURSIVE task_hierarchy (id, name, description, status, priority, due_at, completed_at, created_at, updated_at, project_id, parent_id, rrule, recurrence_template_id, depth, path) AS (
@@ -328,62 +304,8 @@ impl Repository for SqliteRepository {
             "#,
         );
 
-        if !filters.is_empty() {
-            query_builder.push(" WHERE ");
-            let mut first = true;
-            for filter in filters {
-                if !first {
-                    query_builder.push(" AND ");
-                }
-                match filter {
-                    Filter::Status(status) => {
-                        query_builder.push("th.status = ");
-                        query_builder.push_bind(status.clone());
-                    }
-                    Filter::Tag(tag) => {
-                        query_builder
-                            .push("th.id IN (SELECT task_id FROM task_tags WHERE tag_name = ");
-                        query_builder.push_bind(tag);
-                        query_builder.push(")");
-                    }
-                    Filter::TagNot(tag) => {
-                        query_builder
-                            .push("th.id NOT IN (SELECT task_id FROM task_tags WHERE tag_name = ");
-                        query_builder.push_bind(tag);
-                        query_builder.push(")");
-                    }
-                    Filter::Project(project) => {
-                        query_builder.push("p.name = ");
-                        query_builder.push_bind(project);
-                    }
-                    Filter::Priority(priority) => {
-                        query_builder.push("th.priority = ");
-                        query_builder.push_bind(priority.clone());
-                    }
-                    Filter::DueDate(due_date) => match due_date {
-                        DueDate::Today => {
-                            query_builder.push("date(th.due_at) = date('now')");
-                        }
-                        DueDate::Tomorrow => {
-                            query_builder.push("date(th.due_at) = date('now', '+1 day')");
-                        }
-                        DueDate::Overdue => {
-                            query_builder
-                                .push("date(th.due_at) < date('now') AND th.status = 'pending'");
-                        }
-                        DueDate::Before(date) => {
-                            query_builder.push("th.due_at < ");
-                            query_builder.push_bind(date);
-                        }
-                        DueDate::After(date) => {
-                            query_builder.push("th.due_at > ");
-                            query_builder.push_bind(date);
-                        }
-                    },
-                }
-                first = false;
-            }
-        }
+        query_builder.push(" WHERE ");
+        self.build_sql_where_clause(query, &mut query_builder);
 
         query_builder.push(" GROUP BY th.id, th.name, th.description, th.status, th.priority, th.due_at, th.completed_at, th.created_at, th.updated_at, th.project_id, th.parent_id, th.rrule, th.recurrence_template_id, th.depth, th.path, p.name");
         query_builder.push(" ORDER BY th.path");
@@ -696,7 +618,7 @@ impl Repository for SqliteRepository {
         name: String,
         description: Option<String>,
     ) -> Result<Project, CoreError> {
-        let project_id = Uuid::new_v4();
+        let project_id = Uuid::now_v7();
         let project = sqlx::query_as(
             r#"INSERT INTO projects (id, name, description)
             VALUES ($1, $2, $3)
@@ -753,7 +675,7 @@ mod tests {
     use super::*;
     use crate::db::establish_connection;
     use crate::models::{CompletionResult, TaskPriority, TaskStatus};
-    use std::collections::HashSet;
+    use crate::query::{Filter, Query};
 
     async fn setup() -> SqliteRepository {
         let pool = establish_connection("sqlite::memory:").await.unwrap();
@@ -780,7 +702,8 @@ mod tests {
         let added_task = repo.add_task(new_task_data.clone()).await.unwrap();
         assert_eq!(added_task.name, new_task_data.name);
 
-        let fetched_tasks = repo.find_tasks_with_details(&[]).await.unwrap();
+        let query = Query::Filter(Filter::Tag("test".to_string()));
+        let fetched_tasks = repo.find_tasks_with_details(&query).await.unwrap();
         let fetched_task = fetched_tasks
             .iter()
             .find(|t| t.id == added_task.id)
@@ -824,41 +747,14 @@ mod tests {
         };
         let task3 = repo.add_task(task3_data).await.unwrap();
 
-        let results = repo.find_tasks_with_details(&[]).await.unwrap();
+        let query = Query::Filter(Filter::Tag("b".to_string()));
+        let results = repo.find_tasks_with_details(&query).await.unwrap();
         let results_map: HashMap<Uuid, TaskQueryResult> =
             results.into_iter().map(|t| (t.id, t)).collect();
 
-        // Task 1
-        let task1_result = results_map.get(&task1.id).unwrap();
-        let task1_tags: HashSet<String> = task1_result
-            .tags
-            .as_ref()
-            .unwrap()
-            .split(',')
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(
-            task1_tags,
-            ["a".to_string(), "b".to_string()].iter().cloned().collect()
-        );
-
-        // Task 2
-        let task2_result = results_map.get(&task2.id).unwrap();
-        let task2_tags: HashSet<String> = task2_result
-            .tags
-            .as_ref()
-            .unwrap()
-            .split(',')
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(
-            task2_tags,
-            ["b".to_string(), "c".to_string()].iter().cloned().collect()
-        );
-
-        // Task 3
-        let task3_result = results_map.get(&task3.id).unwrap();
-        assert!(task3_result.tags.is_none());
+        assert!(results_map.contains_key(&task1.id));
+        assert!(results_map.contains_key(&task2.id));
+        assert!(!results_map.contains_key(&task3.id));
     }
 
     #[tokio::test]

@@ -133,8 +133,9 @@ pub struct DeleteCommand {
 
 #[derive(Parser, Debug, Clone)]
 pub struct ListCommand {
-    /// Filters to apply to the task list (e.g., "status:pending", "due:today")
-    pub filters: Vec<String>,
+    /// A filter query string (e.g., "status:pending and (project:Work or tag:urgent)")
+    #[clap(default_value = "")]
+    pub query: String,
 }
 
 #[derive(Parser, Debug, Clone)]

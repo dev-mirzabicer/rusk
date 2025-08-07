@@ -22,5 +22,9 @@ async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_plain = "1.0"
 figment = { version = "0.10", features = ["toml", "env"] }
+pest = "2.7"
+pest_derive = "2.7"
+lazy_static = "1.4.0"
+thiserror = "1.0"
 
 rusk-core = { path = "../rusk-core" }

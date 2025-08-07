@@ -9,8 +9,8 @@ use util::resolve_task_id;
 mod cli;
 mod commands;
 mod config;
-mod filter;
 mod parser;
+mod query_parser;
 mod util;
 mod views;
 
@@ -40,7 +40,7 @@ async fn main() {
             let task_id = match resolve_task_id(&repository, &command.id).await {
                 Ok(id) => id,
                 Err(e) => {
-                    handle_error(e);
+                    handle_error(e.into());
                     return;
                 }
             };

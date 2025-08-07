@@ -1,0 +1,30 @@
+// Silent rules (starting with `_`) are used for whitespace.
+WHITESPACE = _{ " " | "\t" }
+
+// Operators
+and = @{ "and" }
+or = @{ "or" }
+not = @{ "not" }
+op = _{ and | or }
+
+// A value can be a single word (no spaces) or a quoted string.
+value_single = @{ (ASCII_ALPHANUMERIC | "_")+ }
+value_quoted = @{ "\"" ~ (ASCII_ALPHANUMERIC | " ")* ~ "\"" }
+value = _{ value_single | value_quoted }
+
+// Specific filter keys.
+filter_key = { "project" | "tag" | "status" | "priority" }
+
+// A basic filter expression, e.g., "project:Work".
+filter_expression = { filter_key ~ ":" ~ value }
+
+// A term is the basic element for the pratt parser.
+// It can be a filter, or a nested expression.
+term = { filter_expression | "(" ~ expression ~ ")" }
+
+// The main expression rule. The Pratt parser in the Rust code will
+// handle the precedence based on the `op` rule.
+expression = { term ~ (op ~ term)* }
+
+// The top-level rule for a filter query.
+filter_query = { SOI ~ expression ~ EOI }

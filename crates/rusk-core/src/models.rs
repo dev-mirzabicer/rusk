@@ -86,7 +86,7 @@ pub struct Task {
 impl Default for Task {
     fn default() -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: Uuid::now_v7(),
             name: "".to_string(),
             description: None,
             status: TaskStatus::Pending,

@@ -3,15 +3,18 @@ use rusk_core::repository::Repository;
 use crate::cli::ListCommand;
 use crate::views::table::{display_tasks, ViewTask};
 use crate::config::Config;
+use crate::query_parser;
 
 pub async fn list_tasks(repo: &impl Repository, command: ListCommand, config: &Config) -> Result<()> {
-    let filters = if command.filters.is_empty() {
-        crate::filter::parse_filters(config.default_filters.clone())?
+    let query_str = if command.query.is_empty() && !config.default_filters.is_empty() {
+        config.default_filters.join(" and ")
     } else {
-        crate::filter::parse_filters(command.filters)?
+        command.query
     };
 
-    let tasks = repo.find_tasks_with_details(&filters).await?;
+    let query = query_parser::parse_query(&query_str)?;
+
+    let tasks = repo.find_tasks_with_details(&query).await?;
 
     let view_tasks: Vec<ViewTask> = tasks
         .into_iter()
