@@ -1,1 +1,21 @@
 default_filters = ["status:pending"]
+
+[recurrence]
+# User's default timezone (IANA format like "America/New_York")
+# Will auto-detect system timezone if not specified
+default_timezone = "UTC"
+
+# Default materialization window in days
+lookahead_days = 30
+
+# Always maintain N future instances
+min_upcoming_instances = 1
+
+# Limit for batch materialization operations
+max_batch_size = 100
+
+# Whether to materialize missed past occurrences
+enable_catchup = false
+
+# Include near-past in materialization windows (days)
+materialization_grace_days = 3

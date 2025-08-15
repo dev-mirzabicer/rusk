@@ -24,8 +24,7 @@ pub struct TaskQueryResult {
     pub updated_at: DateTime<Utc>,
     pub project_id: Option<Uuid>,
     pub parent_id: Option<Uuid>,
-    pub rrule: Option<String>,
-    pub recurrence_template_id: Option<Uuid>,
+    pub series_id: Option<Uuid>,
     pub project_name: Option<String>,
     pub depth: i32,
     pub tags: Option<String>,
@@ -319,13 +318,12 @@ impl SqliteRepository {
             updated_at: Utc::now(),
             project_id: data.project_id,
             parent_id: data.parent_id,
-            rrule: data.rrule,
-            recurrence_template_id: data.recurrence_template_id,
+            series_id: data.series_id,
         };
 
         sqlx::query(
-            r#"INSERT INTO tasks (id, name, description, status, priority, due_at, created_at, updated_at, project_id, parent_id, rrule, recurrence_template_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            r#"INSERT INTO tasks (id, name, description, status, priority, due_at, created_at, updated_at, project_id, parent_id, series_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             "#,
         )
         .bind(task.id)
@@ -338,8 +336,7 @@ impl SqliteRepository {
         .bind(task.updated_at)
         .bind(task.project_id)
         .bind(task.parent_id)
-        .bind(&task.rrule)
-        .bind(task.recurrence_template_id)
+        .bind(task.series_id)
         .execute(&mut **tx)
         .await?;
 
@@ -447,23 +444,23 @@ impl Repository for SqliteRepository {
         query: &Query,
     ) -> Result<Vec<TaskQueryResult>, CoreError> {
         let mut query_builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(
-            r#"WITH RECURSIVE task_hierarchy (id, name, description, status, priority, due_at, completed_at, created_at, updated_at, project_id, parent_id, rrule, recurrence_template_id, depth, path) AS (
+            r#"WITH RECURSIVE task_hierarchy (id, name, description, status, priority, due_at, completed_at, created_at, updated_at, project_id, parent_id, series_id, depth, path) AS (
                 SELECT
-                    t.id, t.name, t.description, t.status, t.priority, t.due_at, t.completed_at, t.created_at, t.updated_at, t.project_id, t.parent_id, t.rrule, t.recurrence_template_id,
+                    t.id, t.name, t.description, t.status, t.priority, t.due_at, t.completed_at, t.created_at, t.updated_at, t.project_id, t.parent_id, t.series_id,
                     0 as depth,
                     CAST(t.created_at AS TEXT) as path
                 FROM tasks t
                 WHERE t.parent_id IS NULL
                 UNION ALL
                 SELECT
-                    t.id, t.name, t.description, t.status, t.priority, t.due_at, t.completed_at, t.created_at, t.updated_at, t.project_id, t.parent_id, t.rrule, t.recurrence_template_id,
+                    t.id, t.name, t.description, t.status, t.priority, t.due_at, t.completed_at, t.created_at, t.updated_at, t.project_id, t.parent_id, t.series_id,
                     th.depth + 1,
                     th.path || ' -> ' || CAST(t.created_at AS TEXT)
                 FROM tasks t
                 JOIN task_hierarchy th ON t.parent_id = th.id
             )
             SELECT
-                th.id, th.name, th.description, th.status, th.priority, th.due_at, th.completed_at, th.created_at, th.updated_at, th.project_id, th.parent_id, th.rrule, th.recurrence_template_id, th.depth, th.path,
+                th.id, th.name, th.description, th.status, th.priority, th.due_at, th.completed_at, th.created_at, th.updated_at, th.project_id, th.parent_id, th.series_id, th.depth, th.path,
                 p.name as project_name,
                 GROUP_CONCAT(tt.tag_name) as tags
             FROM task_hierarchy th
@@ -475,7 +472,7 @@ impl Repository for SqliteRepository {
         query_builder.push(" WHERE ");
         self.build_sql_where_clause(query, &mut query_builder);
 
-        query_builder.push(" GROUP BY th.id, th.name, th.description, th.status, th.priority, th.due_at, th.completed_at, th.created_at, th.updated_at, th.project_id, th.parent_id, th.rrule, th.recurrence_template_id, th.depth, th.path, p.name");
+        query_builder.push(" GROUP BY th.id, th.name, th.description, th.status, th.priority, th.due_at, th.completed_at, th.created_at, th.updated_at, th.project_id, th.parent_id, th.series_id, th.depth, th.path, p.name");
         query_builder.push(" ORDER BY th.path");
 
         let tasks = query_builder.build_query_as().fetch_all(&self.pool).await?;
@@ -528,53 +525,14 @@ impl Repository for SqliteRepository {
         .await
         .map_err(|_| CoreError::NotFound(id.to_string()))?;
 
-        // New "Template-Instance" Recurrence Logic
-        let template_task = if let Some(template_id) = completed_task.recurrence_template_id {
-            // This is an instance, fetch its template
-            self.find_task_by_id_in_transaction(&mut tx, template_id)
-                .await?
-                .ok_or(CoreError::NotFound(
-                    "Recurrence template not found".to_string(),
-                ))?
-        } else {
-            // This is the first task in a series, so it is its own template
-            completed_task.clone()
-        };
-
-        if template_task.rrule.is_some() {
-            let recurrence_manager = RecurrenceManager::new(template_task.clone());
-            let last_due = completed_task.due_at.unwrap_or_else(Utc::now);
-
-            // The crucial fix: ensure we search strictly *after* the last due date.
-            if let Some(next_due) = recurrence_manager.get_next_occurrence(last_due) {
-                let tags: Vec<String> =
-                    sqlx::query_scalar("SELECT tag_name FROM task_tags WHERE task_id = $1")
-                        .bind(template_task.id)
-                        .fetch_all(&mut *tx)
-                        .await?;
-
-                let new_task_data = NewTaskData {
-                    name: template_task.name.clone(),
-                    description: template_task.description.clone(),
-                    due_at: Some(next_due),
-                    priority: Some(template_task.priority.clone()),
-                    project_id: template_task.project_id,
-                    tags,
-                    parent_id: template_task.parent_id,
-                    rrule: template_task.rrule.clone(),
-                    recurrence_template_id: Some(template_task.id),
-                    ..Default::default()
-                };
-
-                let next_task = self.add_task_in_transaction(&mut tx, new_task_data).await?;
-
-                tx.commit().await?;
-                return Ok(CompletionResult::Recurring {
-                    completed: completed_task,
-                    next: next_task,
-                });
-            }
-        }
+        // TODO: Phase 2 - Implement series-aware completion
+        // This will be replaced with MaterializationManager in Phase 2
+        // For now, recurring tasks complete as single tasks
+        
+        // Note: Series completion logic will be implemented in Phase 2 using:
+        // 1. Check if task.series_id is present
+        // 2. Use MaterializationManager to create next occurrence
+        // 3. Return CompletionResult::SeriesInstance with series information
 
         tx.commit().await?;
         Ok(CompletionResult::Single(completed_task))
@@ -664,12 +622,12 @@ impl Repository for SqliteRepository {
             updated = true;
         }
 
-        if let Some(recurrence_template_id) = data.recurrence_template_id {
+        if let Some(series_id) = data.series_id {
             if updated {
                 qb.push(", ");
             }
-            qb.push("recurrence_template_id = ");
-            qb.push_bind(recurrence_template_id);
+            qb.push("series_id = ");
+            qb.push_bind(series_id);
             updated = true;
         }
 
@@ -864,7 +822,8 @@ mod tests {
             rrule: None,
             depends_on: None,
             project_id: None,
-            recurrence_template_id: None,
+            series_id: None,
+            timezone: None,
         };
 
         let added_task = repo.add_task(new_task_data.clone()).await.unwrap();

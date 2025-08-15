@@ -19,16 +19,8 @@ impl RecurrenceManager {
     /// occurrences and find the first one that is strictly greater than the
     /// last due date." This is simpler, more readable, and correct.
     pub fn get_next_occurrence(&self, last_due: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        if let Some(rrule_str) = &self.task.rrule {
-            let rrule: RRuleSet = rrule_str.parse().ok()?;
-
-            // Find the first occurrence that is strictly after the last due date.
-            rrule
-                .into_iter()
-                .find(|occurrence| *occurrence > last_due.with_timezone(&Tz::UTC))
-                .map(|dt| dt.with_timezone(&Utc))
-        } else {
-            None
-        }
+        // TODO: Phase 2 - Reimplement using series-based recurrence
+        // This will be replaced with proper series-aware recurrence calculation
+        None
     }
 }

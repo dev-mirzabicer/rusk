@@ -18,8 +18,10 @@ const DATABASE_URL: &str = "rusk.db";
 
 #[tokio::main]
 async fn main() {
-    let config =
-        config::Config::new().unwrap_or_else(|_| config::Config { default_filters: vec![] });
+    let config = config::Config::new().unwrap_or_else(|_| config::Config { 
+        default_filters: vec![], 
+        recurrence: config::MaterializationConfig::default(),
+    });
     let db_pool = match db::establish_connection(DATABASE_URL).await {
         Ok(pool) => pool,
         Err(e) => {
