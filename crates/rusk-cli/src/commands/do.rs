@@ -26,6 +26,28 @@ pub async fn do_task(repo: &impl Repository, command: DoCommand) -> Result<()> {
                 println!("Created recurring task '{}'", next.name);
             }
         }
+        Ok(CompletionResult::SeriesInstance { completed, next, series_id, next_occurrence }) => {
+            println!("Completed task from series: '{}'", completed.name);
+            if let Some(next_task) = next {
+                if let Some(due_at) = next_task.due_at {
+                    println!(
+                        "Created next series instance '{}' for {}",
+                        next_task.name,
+                        due_at.to_rfc2822()
+                    );
+                } else {
+                    println!("Created next series instance '{}'", next_task.name);
+                }
+            } else if let Some(next_due) = next_occurrence {
+                println!(
+                    "Next occurrence for series {} scheduled for {}",
+                    series_id,
+                    next_due.to_rfc2822()
+                );
+            } else {
+                println!("Series {} completed", series_id);
+            }
+        }
         Err(CoreError::TaskBlocked(deps)) => {
             return Err(anyhow!("Task is blocked by the following tasks: {}", deps))
         }

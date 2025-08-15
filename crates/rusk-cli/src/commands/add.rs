@@ -23,7 +23,8 @@ pub async fn add_task(repo: &impl Repository, command: AddCommand) -> Result<()>
         parent_id: command.parent.map(|p| p.parse()).transpose()?,
         rrule: command.recurrence,
         depends_on,
-        recurrence_template_id: None,
+        series_id: None,
+        timezone: None, // TODO: Get from config or command
     };
 
     let added_task = repo.add_task(new_task_data).await?;

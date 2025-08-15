@@ -29,7 +29,11 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let repository = SqliteRepository::new(db_pool);
+    use rusk_core::models::MaterializationConfig;
+    use rusk_core::recurrence::MaterializationManager;
+    
+    let materialization_manager = MaterializationManager::new(MaterializationConfig::default());
+    let repository = SqliteRepository::new(db_pool, materialization_manager);
 
     let cli = cli::Cli::parse();
 

@@ -26,6 +26,21 @@ pub enum CoreError {
     #[error("Circular dependency detected: Task '{0}' cannot depend on '{1}'.")]
     CircularDependency(String, String),
 
+    #[error("Invalid timezone: {0}")]
+    InvalidTimezone(String),
+
+    #[error("Invalid RRULE: {0}")]
+    InvalidRRule(String),
+
+    #[error("Invalid exception: {0}")]
+    InvalidException(String),
+
+    #[error("Series not found: {0}")]
+    SeriesNotFound(String),
+
+    #[error("Materialization error: {0}")]
+    MaterializationError(String),
+
     #[error("An unknown error has occurred.")]
     Unknown,
 }

@@ -363,3 +363,102 @@ impl FromStr for EditScope {
 #[derive(Error, Debug, PartialEq)]
 #[error("Invalid edit scope: {0}")]
 pub struct ParseEditScopeError(String);
+
+// ============================================================================
+// Series Occurrence Models (Phase 2)
+// ============================================================================
+
+/// Represents a single occurrence within a recurring series.
+/// Used by RecurrenceManager to return structured occurrence data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeriesOccurrence {
+    /// The originally scheduled time for this occurrence (in UTC)
+    pub scheduled_at: DateTime<Utc>,
+    /// The effective time (may differ from scheduled_at if moved via exception)
+    pub effective_at: DateTime<Utc>,
+    /// Whether this occurrence is affected by an exception
+    pub has_exception: bool,
+    /// Type of exception if any
+    pub exception_type: Option<ExceptionType>,
+    /// Reference to custom task for override/move exceptions
+    pub exception_task_id: Option<Uuid>,
+}
+
+impl SeriesOccurrence {
+    /// Create a normal occurrence without exceptions
+    pub fn normal(scheduled_at: DateTime<Utc>) -> Self {
+        Self {
+            scheduled_at,
+            effective_at: scheduled_at,
+            has_exception: false,
+            exception_type: None,
+            exception_task_id: None,
+        }
+    }
+
+    /// Create a skipped occurrence
+    pub fn skipped(scheduled_at: DateTime<Utc>) -> Self {
+        Self {
+            scheduled_at,
+            effective_at: scheduled_at, // Not used for skipped occurrences
+            has_exception: true,
+            exception_type: Some(ExceptionType::Skip),
+            exception_task_id: None,
+        }
+    }
+
+    /// Create an override occurrence with custom task
+    pub fn override_with(scheduled_at: DateTime<Utc>, exception_task_id: Uuid) -> Self {
+        Self {
+            scheduled_at,
+            effective_at: scheduled_at,
+            has_exception: true,
+            exception_type: Some(ExceptionType::Override),
+            exception_task_id: Some(exception_task_id),
+        }
+    }
+
+    /// Create a moved occurrence with new time and custom task
+    pub fn moved(scheduled_at: DateTime<Utc>, effective_at: DateTime<Utc>, exception_task_id: Uuid) -> Self {
+        Self {
+            scheduled_at,
+            effective_at,
+            has_exception: true,
+            exception_type: Some(ExceptionType::Move),
+            exception_task_id: Some(exception_task_id),
+        }
+    }
+
+    /// Returns true if this occurrence should be visible to the user
+    pub fn is_visible(&self) -> bool {
+        !matches!(self.exception_type, Some(ExceptionType::Skip))
+    }
+}
+
+/// Configuration for materialization behavior - core version
+/// This is separate from the CLI config to allow for type differences
+#[derive(Debug, Clone)]
+pub struct MaterializationConfig {
+    /// Default materialization window in days
+    pub lookahead_days: i64,
+    /// Always maintain N future instances
+    pub min_upcoming_instances: usize,
+    /// Limit for batch operations
+    pub max_batch_size: usize,
+    /// Whether to materialize missed past occurrences
+    pub enable_catchup: bool,
+    /// Include near-past in windows (days)
+    pub materialization_grace_days: i64,
+}
+
+impl Default for MaterializationConfig {
+    fn default() -> Self {
+        Self {
+            lookahead_days: 30,
+            min_upcoming_instances: 1,
+            max_batch_size: 100,
+            enable_catchup: false,
+            materialization_grace_days: 3,
+        }
+    }
+}

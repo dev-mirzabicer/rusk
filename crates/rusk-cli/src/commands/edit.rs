@@ -71,10 +71,11 @@ pub async fn edit_task(repo: &(impl Repository + Sync), command: EditCommand) ->
         parent_id,
         rrule,
         depends_on,
-        recurrence_template_id: None, // Not user-editable for now
+        timezone: None, // TODO: Get from config or command  
+        series_id: None, // Not user-editable for now
     };
 
-    let updated_task = repo.update_task(task_id, update_data).await?;
+    let updated_task = repo.update_task(task_id, update_data, None).await?;
 
     println!("Updated task with ID: {}", updated_task.id);
 
