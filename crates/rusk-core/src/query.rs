@@ -1,4 +1,5 @@
 use crate::models::{TaskPriority, TaskStatus};
+use chrono::{DateTime, Utc, Duration};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operator {
@@ -18,10 +19,64 @@ pub enum Query {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum DueDate {
+    /// Specific date/time (exact match)
+    On(DateTime<Utc>),
+    /// Before this date/time
+    Before(DateTime<Utc>),
+    /// After this date/time  
+    After(DateTime<Utc>),
+    /// Today (any time today)
+    Today,
+    /// Tomorrow (any time tomorrow)
+    Tomorrow,
+    /// Yesterday (any time yesterday)
+    Yesterday,
+    /// Tasks that are overdue (due_at < now and status = pending)
+    Overdue,
+    /// Within a duration from now (e.g., "in 2 weeks")
+    Within(Duration),
+    /// Duration ago from now (e.g., "2 days ago")
+    Ago(Duration),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TagFilter {
+    /// Task has this specific tag
+    Has(String),
+    /// Task has all of these tags
+    HasAll(Vec<String>),
+    /// Task has any of these tags
+    HasAny(Vec<String>),
+    /// Task's tags are exactly this set (no more, no less)
+    Exact(Vec<String>),
+    /// Task does not have this tag
+    NotHas(String),
+    /// Task does not have any of these tags
+    NotHasAny(Vec<String>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TextFilter {
+    /// Case-insensitive substring search
+    Contains(String),
+    /// Case-insensitive exact match
+    Equals(String),
+    /// Case-insensitive prefix match
+    StartsWith(String),
+    /// Case-insensitive suffix match
+    EndsWith(String),
+    /// Does not contain substring (case-insensitive)
+    NotContains(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Filter {
     Project(String),
-    Tag(String),
+    Tags(TagFilter),
     Status(TaskStatus),
     Priority(TaskPriority),
-    // Due(DueDate), // Add this later
+    Due(DueDate),
+    Name(TextFilter),
+    Description(TextFilter),
 }

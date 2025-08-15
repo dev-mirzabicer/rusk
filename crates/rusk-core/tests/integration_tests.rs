@@ -1,6 +1,6 @@
 use rusk_core::db::establish_connection;
 use rusk_core::models::{NewTaskData, UpdateTaskData, TaskPriority};
-use rusk_core::query::{Filter, Query};
+use rusk_core::query::{Filter, Query, TagFilter};
 use rusk_core::repository::{Repository, SqliteRepository};
 
 #[tokio::test]
@@ -18,7 +18,7 @@ async fn test_add_and_find_task() {
     let added_task = repo.add_task(new_task_data).await.unwrap();
     assert_eq!(added_task.name, "Test Task");
 
-    let query = Query::Filter(Filter::Tag("nonexistent".to_string())); // A query that should not fail, but might return 0 results
+    let query = Query::Filter(Filter::Tags(TagFilter::Has("nonexistent".to_string()))); // A query that should not fail, but might return 0 results
     let _tasks = repo.find_tasks_with_details(&query).await.unwrap();
     // We are not asserting the length here as the query is not the main point of this test.
     // The main point is that the task is added.
@@ -39,12 +39,12 @@ async fn test_add_and_find_task_with_tags() {
 
     repo.add_task(new_task_data).await.unwrap();
 
-    let query1 = Query::Filter(Filter::Tag("tag1".to_string()));
+    let query1 = Query::Filter(Filter::Tags(TagFilter::Has("tag1".to_string())));
     let tasks = repo.find_tasks_with_details(&query1).await.unwrap();
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].name, "Test Task");
 
-    let query2 = Query::Filter(Filter::Tag("tag3".to_string()));
+    let query2 = Query::Filter(Filter::Tags(TagFilter::Has("tag3".to_string())));
     let tasks = repo.find_tasks_with_details(&query2).await.unwrap();
     assert_eq!(tasks.len(), 0);
 }

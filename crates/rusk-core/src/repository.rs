@@ -75,11 +75,6 @@ impl SqliteRepository {
                     qb.push("p.name = ");
                     qb.push_bind(name.clone());
                 }
-                Filter::Tag(name) => {
-                    qb.push("th.id IN (SELECT task_id FROM task_tags WHERE tag_name = ");
-                    qb.push_bind(name.clone());
-                    qb.push(")");
-                }
                 Filter::Status(status) => {
                     qb.push("th.status = ");
                     qb.push_bind(status.clone());
@@ -87,6 +82,179 @@ impl SqliteRepository {
                 Filter::Priority(priority) => {
                     qb.push("th.priority = ");
                     qb.push_bind(priority.clone());
+                }
+                Filter::Tags(tag_filter) => {
+                    use crate::query::TagFilter;
+                    
+                    match tag_filter {
+                        TagFilter::Has(tag) => {
+                            qb.push("th.id IN (SELECT task_id FROM task_tags WHERE tag_name = ");
+                            qb.push_bind(tag.clone());
+                            qb.push(")");
+                        }
+                        TagFilter::HasAll(tags) => {
+                            qb.push("th.id IN (SELECT task_id FROM task_tags WHERE tag_name IN (");
+                            for (i, tag) in tags.iter().enumerate() {
+                                if i > 0 {
+                                    qb.push(", ");
+                                }
+                                qb.push_bind(tag.clone());
+                            }
+                            qb.push(") GROUP BY task_id HAVING COUNT(DISTINCT tag_name) = ");
+                            qb.push_bind(tags.len() as i64);
+                            qb.push(")");
+                        }
+                        TagFilter::HasAny(tags) => {
+                            qb.push("th.id IN (SELECT task_id FROM task_tags WHERE tag_name IN (");
+                            for (i, tag) in tags.iter().enumerate() {
+                                if i > 0 {
+                                    qb.push(", ");
+                                }
+                                qb.push_bind(tag.clone());
+                            }
+                            qb.push("))");
+                        }
+                        TagFilter::Exact(tags) => {
+                            // Tasks that have exactly these tags (no more, no less)
+                            qb.push("th.id IN (SELECT task_id FROM task_tags WHERE tag_name IN (");
+                            for (i, tag) in tags.iter().enumerate() {
+                                if i > 0 {
+                                    qb.push(", ");
+                                }
+                                qb.push_bind(tag.clone());
+                            }
+                            qb.push(") GROUP BY task_id HAVING COUNT(tag_name) = ");
+                            qb.push_bind(tags.len() as i64);
+                            qb.push(") AND th.id NOT IN (SELECT task_id FROM task_tags WHERE tag_name NOT IN (");
+                            for (i, tag) in tags.iter().enumerate() {
+                                if i > 0 {
+                                    qb.push(", ");
+                                }
+                                qb.push_bind(tag.clone());
+                            }
+                            qb.push("))");
+                        }
+                        TagFilter::NotHas(tag) => {
+                            qb.push("th.id NOT IN (SELECT task_id FROM task_tags WHERE tag_name = ");
+                            qb.push_bind(tag.clone());
+                            qb.push(")");
+                        }
+                        TagFilter::NotHasAny(tags) => {
+                            qb.push("th.id NOT IN (SELECT task_id FROM task_tags WHERE tag_name IN (");
+                            for (i, tag) in tags.iter().enumerate() {
+                                if i > 0 {
+                                    qb.push(", ");
+                                }
+                                qb.push_bind(tag.clone());
+                            }
+                            qb.push("))");
+                        }
+                    }
+                }
+                Filter::Name(text_filter) => {
+                    use crate::query::TextFilter;
+                    
+                    match text_filter {
+                        TextFilter::Contains(text) => {
+                            qb.push("LOWER(th.name) LIKE LOWER(");
+                            qb.push_bind(format!("%{}%", text));
+                            qb.push(")");
+                        }
+                        TextFilter::Equals(text) => {
+                            qb.push("LOWER(th.name) = LOWER(");
+                            qb.push_bind(text.clone());
+                            qb.push(")");
+                        }
+                        TextFilter::StartsWith(text) => {
+                            qb.push("LOWER(th.name) LIKE LOWER(");
+                            qb.push_bind(format!("{}%", text));
+                            qb.push(")");
+                        }
+                        TextFilter::EndsWith(text) => {
+                            qb.push("LOWER(th.name) LIKE LOWER(");
+                            qb.push_bind(format!("%{}", text));
+                            qb.push(")");
+                        }
+                        TextFilter::NotContains(text) => {
+                            qb.push("LOWER(th.name) NOT LIKE LOWER(");
+                            qb.push_bind(format!("%{}%", text));
+                            qb.push(")");
+                        }
+                    }
+                }
+                Filter::Description(text_filter) => {
+                    use crate::query::TextFilter;
+                    
+                    match text_filter {
+                        TextFilter::Contains(text) => {
+                            qb.push("LOWER(th.description) LIKE LOWER(");
+                            qb.push_bind(format!("%{}%", text));
+                            qb.push(")");
+                        }
+                        TextFilter::Equals(text) => {
+                            qb.push("LOWER(th.description) = LOWER(");
+                            qb.push_bind(text.clone());
+                            qb.push(")");
+                        }
+                        TextFilter::StartsWith(text) => {
+                            qb.push("LOWER(th.description) LIKE LOWER(");
+                            qb.push_bind(format!("{}%", text));
+                            qb.push(")");
+                        }
+                        TextFilter::EndsWith(text) => {
+                            qb.push("LOWER(th.description) LIKE LOWER(");
+                            qb.push_bind(format!("%{}", text));
+                            qb.push(")");
+                        }
+                        TextFilter::NotContains(text) => {
+                            qb.push("LOWER(th.description) NOT LIKE LOWER(");
+                            qb.push_bind(format!("%{}%", text));
+                            qb.push(")");
+                        }
+                    }
+                }
+                Filter::Due(due_date) => {
+                    use crate::query::DueDate;
+                    use chrono::Utc;
+                    
+                    match due_date {
+                        DueDate::On(date_time) => {
+                            qb.push("DATE(th.due_at) = DATE(");
+                            qb.push_bind(date_time.clone());
+                            qb.push(")");
+                        }
+                        DueDate::Before(date_time) => {
+                            qb.push("th.due_at < ");
+                            qb.push_bind(date_time.clone());
+                        }
+                        DueDate::After(date_time) => {
+                            qb.push("th.due_at > ");
+                            qb.push_bind(date_time.clone());
+                        }
+                        DueDate::Today => {
+                            qb.push("DATE(th.due_at) = DATE('now')");
+                        }
+                        DueDate::Tomorrow => {
+                            qb.push("DATE(th.due_at) = DATE('now', '+1 day')");
+                        }
+                        DueDate::Yesterday => {
+                            qb.push("DATE(th.due_at) = DATE('now', '-1 day')");
+                        }
+                        DueDate::Overdue => {
+                            qb.push("th.due_at < datetime('now') AND th.status = 'pending'");
+                        }
+                        DueDate::Within(duration) => {
+                            let target_date = Utc::now() + *duration;
+                            qb.push("th.due_at BETWEEN datetime('now') AND ");
+                            qb.push_bind(target_date);
+                        }
+                        DueDate::Ago(duration) => {
+                            let start_date = Utc::now() - *duration;
+                            qb.push("th.due_at BETWEEN ");
+                            qb.push_bind(start_date);
+                            qb.push(" AND datetime('now')");
+                        }
+                    }
                 }
             },
             Query::Not(query) => {
@@ -702,7 +870,7 @@ mod tests {
         let added_task = repo.add_task(new_task_data.clone()).await.unwrap();
         assert_eq!(added_task.name, new_task_data.name);
 
-        let query = Query::Filter(Filter::Tag("test".to_string()));
+        let query = Query::Filter(Filter::Tags(crate::query::TagFilter::Has("test".to_string())));
         let fetched_tasks = repo.find_tasks_with_details(&query).await.unwrap();
         let fetched_task = fetched_tasks
             .iter()
@@ -747,7 +915,7 @@ mod tests {
         };
         let task3 = repo.add_task(task3_data).await.unwrap();
 
-        let query = Query::Filter(Filter::Tag("b".to_string()));
+        let query = Query::Filter(Filter::Tags(crate::query::TagFilter::Has("b".to_string())));
         let results = repo.find_tasks_with_details(&query).await.unwrap();
         let results_map: HashMap<Uuid, TaskQueryResult> =
             results.into_iter().map(|t| (t.id, t)).collect();

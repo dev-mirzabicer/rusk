@@ -7,16 +7,69 @@ or = @{ "or" }
 not = @{ "not" }
 op = _{ and | or }
 
-// A value can be a single word (no spaces) or a quoted string.
-value_single = @{ (ASCII_ALPHANUMERIC | "_")+ }
-value_quoted = @{ "\"" ~ (ASCII_ALPHANUMERIC | " ")* ~ "\"" }
+// Basic value types for non-date filters
+value_single = @{ (ASCII_ALPHANUMERIC | "_" | "-")+ }
+value_quoted = @{ "\"" ~ (ASCII_ALPHANUMERIC | " " | "_" | "-" | "." | ":")* ~ "\"" }
 value = _{ value_single | value_quoted }
 
-// Specific filter keys.
-filter_key = { "project" | "tag" | "status" | "priority" }
+// Date and time components for robust date parsing
+digit = @{ '0'..'9' }
+year = @{ digit{4} }
+month = @{ ("0" ~ ('1'..'9')) | ("1" ~ ('0'..'2')) }
+day = @{ ("0" ~ ('1'..'9')) | (('1'..'2') ~ digit) | ("3" ~ ('0'..'1')) }
+hour = @{ (('0'..'1') ~ digit) | ("2" ~ ('0'..'3')) }
+minute = @{ ('0'..'5') ~ digit }
+second = @{ ('0'..'5') ~ digit }
 
-// A basic filter expression, e.g., "project:Work".
-filter_expression = { filter_key ~ ":" ~ value }
+// ISO date formats (YYYY-MM-DD, YYYY-MM-DDTHH:MM:SS, etc.)
+iso_date = @{ year ~ "-" ~ month ~ "-" ~ day }
+iso_datetime = @{ iso_date ~ ("T" ~ hour ~ ":" ~ minute ~ (":" ~ second)?)? }
+
+// Relative date expressions
+time_unit = @{ "day" ~ "s"? | "week" ~ "s"? | "month" ~ "s"? | "year" ~ "s"? | "hour" ~ "s"? | "minute" ~ "s"? }
+number = @{ digit+ }
+relative_expr = @{ "in" ~ WHITESPACE+ ~ number ~ WHITESPACE+ ~ time_unit }
+ago_expr = @{ number ~ WHITESPACE+ ~ time_unit ~ WHITESPACE+ ~ "ago" }
+
+// Keyword dates
+keyword_date = @{ "today" | "tomorrow" | "yesterday" | "overdue" }
+
+// Date comparison operators
+date_op = @{ "before" | "after" | "on" }
+date_comparison = @{ date_op ~ ":" ~ date_value }
+
+// Date values encompassing all formats
+date_value = _{ 
+    iso_datetime | 
+    iso_date | 
+    relative_expr | 
+    ago_expr | 
+    keyword_date |
+    value_quoted |
+    value_single 
+}
+
+// Tag list values - comma separated
+tag_list = { value ~ ("," ~ WHITESPACE* ~ value)* }
+
+// Text search operators
+text_op = { "contains" | "equals" | "startswith" | "endswith" | "notcontains" }
+text_filter_expr = { text_op ~ ":" ~ value }
+
+// Tag operators for advanced tag filtering
+tag_op = { "has" | "hasall" | "hasany" | "exact" | "nothas" | "nothasany" }
+tag_filter_expr = { tag_op ~ ":" ~ (tag_list | value) }
+
+// Enhanced filter keys
+filter_key = { "project" | "status" | "priority" | "due" | "name" | "description" }
+tag_key = { "tags" | "tag" }
+
+// Filter expressions with specialized handling
+due_filter = { "due" ~ ":" ~ (date_comparison | date_value) }
+tag_filter = { tag_key ~ ":" ~ (tag_filter_expr | value) }
+text_filter = { ("name" | "description") ~ ":" ~ (text_filter_expr | value) }
+basic_filter = { filter_key ~ ":" ~ value }
+filter_expression = { due_filter | tag_filter | text_filter | basic_filter }
 
 // A term is the basic element for the pratt parser.
 // It can be a filter, or a nested expression.
