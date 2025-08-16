@@ -290,19 +290,6 @@ rusk recur preview id      ~80ms
 Complex filter query       ~120ms
 ```
 
-## 📊 Comparison
-
-| Feature | Rusk | Todoist | TaskWarrior | Other CLI Tools |
-|---------|------|---------|-------------|-----------------|
-| Recurring Tasks | ✅ Advanced | ✅ Basic | ❌ Limited | ❌ None |
-| Timezone Support | ✅ Full IANA | ❌ Basic | ❌ None | ❌ None |
-| Exception Handling | ✅ Skip/Move/Override | ❌ Limited | ❌ None | ❌ None |
-| Natural Language | ✅ Dates & Commands | ✅ Dates Only | ❌ Limited | ❌ Basic |
-| Advanced Filtering | ✅ Logical Operators | ✅ Basic | ✅ Complex | ❌ Basic |
-| Performance | ⚡ Instant | 🐌 Web-dependent | ⚡ Fast | ⚡ Fast |
-| Offline Usage | ✅ Always | ❌ Limited | ✅ Always | ✅ Always |
-| Data Ownership | ✅ Local SQLite | ❌ Cloud-only | ✅ Local | ✅ Local |
-
 ## 🎯 Use Cases
 
 ### Personal Productivity
