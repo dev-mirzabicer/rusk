@@ -3,7 +3,7 @@ use crate::error::CoreError;
 use crate::models::{
     CompletionResult, NewTaskData, Project, Task, TaskPriority, TaskStatus,
     UpdateTaskData, TaskSeries, SeriesException, NewSeriesData, UpdateSeriesData, 
-    NewSeriesException, EditScope,
+    NewSeriesException, EditScope, ExceptionType, SeriesStatistics,
 };
 use crate::query::{Filter, Operator, Query};
 use crate::recurrence::{RecurrenceManager, MaterializationManager};
@@ -66,6 +66,20 @@ pub trait Repository {
     async fn add_series_exception(&self, exception: NewSeriesException) -> Result<SeriesException, CoreError>;
     async fn find_series_exceptions(&self, series_id: Uuid) -> Result<Vec<SeriesException>, CoreError>;
     async fn remove_series_exception(&self, series_id: Uuid, occurrence_dt: DateTime<Utc>) -> Result<(), CoreError>;
+    
+    // Advanced Exception Management Methods (Phase 5)
+    async fn add_bulk_series_exceptions(&self, exceptions: Vec<NewSeriesException>) -> Result<Vec<SeriesException>, CoreError>;
+    async fn remove_bulk_series_exceptions(&self, series_id: Uuid, occurrence_dts: Vec<DateTime<Utc>>) -> Result<usize, CoreError>;
+    async fn validate_exception_conflicts(&self, series_id: Uuid, new_exception: &NewSeriesException) -> Result<Vec<SeriesException>, CoreError>;
+    async fn override_occurrence_with_task(&self, series_id: Uuid, occurrence_dt: DateTime<Utc>, override_task_data: NewTaskData) -> Result<Task, CoreError>;
+    async fn move_occurrence_with_validation(&self, series_id: Uuid, from_dt: DateTime<Utc>, to_dt: DateTime<Utc>, timezone: &str) -> Result<Task, CoreError>;
+    
+    // Series Management Methods (Phase 5)
+    async fn duplicate_series(&self, series_id: Uuid, new_name: String, new_timezone: Option<String>) -> Result<TaskSeries, CoreError>;
+    async fn archive_completed_series(&self, series_id: Uuid) -> Result<(), CoreError>;
+    async fn bulk_update_series(&self, updates: Vec<(Uuid, UpdateSeriesData)>) -> Result<Vec<TaskSeries>, CoreError>;
+    async fn find_series_by_pattern(&self, pattern: &str) -> Result<Vec<TaskSeries>, CoreError>;
+    async fn get_series_statistics(&self, series_id: Uuid) -> Result<SeriesStatistics, CoreError>;
     
     // Materialization Support Methods (Phase 3)
     async fn refresh_series_materialization(&self, window_start: DateTime<Utc>, window_end: DateTime<Utc>) -> Result<(), CoreError>;
@@ -1231,6 +1245,344 @@ impl Repository for SqliteRepository {
 
         Ok(())
     }
+
+    // ========== Phase 5: Advanced Exception Management Methods ==========
+
+    async fn add_bulk_series_exceptions(&self, exceptions: Vec<NewSeriesException>) -> Result<Vec<SeriesException>, CoreError> {
+        let mut tx = self.pool.begin().await?;
+        let mut created_exceptions = Vec::new();
+
+        for exception in exceptions {
+            // Validate each exception
+            self.validate_exception_data(&exception).await?;
+            
+            let created = self.add_series_exception_in_transaction(&mut tx, exception).await?;
+            created_exceptions.push(created);
+        }
+
+        tx.commit().await?;
+        Ok(created_exceptions)
+    }
+
+    async fn remove_bulk_series_exceptions(&self, series_id: Uuid, occurrence_dts: Vec<DateTime<Utc>>) -> Result<usize, CoreError> {
+        let mut tx = self.pool.begin().await?;
+        let mut total_removed = 0;
+
+        for occurrence_dt in occurrence_dts {
+            let result = sqlx::query(
+                "DELETE FROM series_exceptions WHERE series_id = $1 AND occurrence_dt = $2"
+            )
+            .bind(series_id)
+            .bind(occurrence_dt)
+            .execute(&mut *tx)
+            .await?;
+
+            total_removed += result.rows_affected() as usize;
+        }
+
+        tx.commit().await?;
+        Ok(total_removed)
+    }
+
+    async fn validate_exception_conflicts(&self, series_id: Uuid, new_exception: &NewSeriesException) -> Result<Vec<SeriesException>, CoreError> {
+        // Check for existing exceptions at the same occurrence time
+        let existing_exceptions: Vec<SeriesException> = sqlx::query_as(
+            "SELECT * FROM series_exceptions WHERE series_id = $1 AND occurrence_dt = $2"
+        )
+        .bind(series_id)
+        .bind(new_exception.occurrence_dt)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(existing_exceptions)
+    }
+
+    async fn override_occurrence_with_task(&self, series_id: Uuid, occurrence_dt: DateTime<Utc>, override_task_data: NewTaskData) -> Result<Task, CoreError> {
+        let mut tx = self.pool.begin().await?;
+
+        // Create the override task
+        let override_task = self.add_task_in_transaction(&mut tx, override_task_data).await?;
+
+        // Create or update the exception
+        let exception = NewSeriesException {
+            series_id,
+            occurrence_dt,
+            exception_type: ExceptionType::Override,
+            exception_task_id: Some(override_task.id),
+            notes: Some(format!("Override task created: {}", override_task.name)),
+        };
+
+        self.add_series_exception_in_transaction(&mut tx, exception).await?;
+
+        tx.commit().await?;
+        Ok(override_task)
+    }
+
+    async fn move_occurrence_with_validation(&self, series_id: Uuid, from_dt: DateTime<Utc>, to_dt: DateTime<Utc>, timezone: &str) -> Result<Task, CoreError> {
+        let mut tx = self.pool.begin().await?;
+
+        // Get series and template task
+        let series: TaskSeries = sqlx::query_as("SELECT * FROM task_series WHERE id = $1")
+            .bind(series_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| CoreError::NotFound(format!("Series with id {} not found", series_id)))?;
+
+        let template_task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id = $1")
+            .bind(series.template_task_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| CoreError::NotFound(format!("Template task with id {} not found", series.template_task_id)))?;
+
+        // Validate timezone
+        crate::timezone::validate_timezone(timezone)?;
+
+        // Create moved task based on template
+        let moved_task_data = NewTaskData {
+            name: template_task.name.clone(),
+            description: template_task.description.clone(),
+            due_at: Some(to_dt),
+            priority: Some(template_task.priority.clone()),
+            project_id: template_task.project_id,
+            tags: vec![], // Will be copied separately if needed
+            parent_id: template_task.parent_id,
+            depends_on: None,
+            rrule: None,
+            series_id: None, // This is a standalone moved task
+            timezone: Some(timezone.to_string()),
+            ..Default::default()
+        };
+
+        let moved_task = self.add_task_in_transaction(&mut tx, moved_task_data).await?;
+
+        // Create move exception
+        let exception = NewSeriesException {
+            series_id,
+            occurrence_dt: from_dt,
+            exception_type: ExceptionType::Move,
+            exception_task_id: Some(moved_task.id),
+            notes: Some(format!("Moved from {} to {} ({})", from_dt.format("%Y-%m-%d %H:%M"), to_dt.format("%Y-%m-%d %H:%M"), timezone)),
+        };
+
+        self.add_series_exception_in_transaction(&mut tx, exception).await?;
+
+        tx.commit().await?;
+        Ok(moved_task)
+    }
+
+    // ========== Phase 5: Series Management Methods ==========
+
+    async fn duplicate_series(&self, series_id: Uuid, new_name: String, new_timezone: Option<String>) -> Result<TaskSeries, CoreError> {
+        let mut tx = self.pool.begin().await?;
+
+        // Get original series and template
+        let original_series: TaskSeries = sqlx::query_as("SELECT * FROM task_series WHERE id = $1")
+            .bind(series_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| CoreError::NotFound(format!("Series with id {} not found", series_id)))?;
+
+        let original_template: Task = sqlx::query_as("SELECT * FROM tasks WHERE id = $1")
+            .bind(original_series.template_task_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| CoreError::NotFound(format!("Template task with id {} not found", original_series.template_task_id)))?;
+
+        // Create new template task
+        let new_template_data = NewTaskData {
+            name: new_name,
+            description: original_template.description.clone(),
+            due_at: original_template.due_at,
+            priority: Some(original_template.priority.clone()),
+            project_id: original_template.project_id,
+            tags: vec![], // Will be copied from original if needed
+            parent_id: None, // Don't duplicate parent relationships
+            depends_on: None,
+            rrule: None,
+            series_id: None,
+            timezone: new_timezone.clone(),
+            ..Default::default()
+        };
+
+        let new_template = self.add_task_in_transaction(&mut tx, new_template_data).await?;
+
+        // Create new series
+        let new_series_data = NewSeriesData {
+            template_task_id: new_template.id,
+            rrule: original_series.rrule.clone(),
+            dtstart: original_series.dtstart,
+            timezone: new_timezone.unwrap_or(original_series.timezone.clone()),
+        };
+
+        let new_series = self.create_series_in_transaction(&mut tx, new_series_data).await?;
+
+        // Copy tags from original template if any
+        let original_tags: Vec<(String,)> = sqlx::query_as("SELECT tag_name FROM task_tags WHERE task_id = $1")
+            .bind(original_template.id)
+            .fetch_all(&mut *tx)
+            .await?;
+
+        for (tag_name,) in original_tags {
+            sqlx::query("INSERT INTO task_tags (task_id, tag_name) VALUES ($1, $2)")
+                .bind(new_template.id)
+                .bind(tag_name)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+        Ok(new_series)
+    }
+
+    async fn archive_completed_series(&self, series_id: Uuid) -> Result<(), CoreError> {
+        let mut tx = self.pool.begin().await?;
+
+        // Verify all instances are completed or cancelled
+        let pending_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM tasks WHERE series_id = $1 AND status = 'pending'"
+        )
+        .bind(series_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        if pending_count.0 > 0 {
+            return Err(CoreError::SeriesNotCompleted(format!(
+                "Series has {} pending tasks that must be completed or cancelled before archiving", 
+                pending_count.0
+            )));
+        }
+
+        // Set series to inactive
+        sqlx::query("UPDATE task_series SET active = false, updated_at = $1 WHERE id = $2")
+            .bind(Utc::now())
+            .bind(series_id)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn bulk_update_series(&self, updates: Vec<(Uuid, UpdateSeriesData)>) -> Result<Vec<TaskSeries>, CoreError> {
+        let mut tx = self.pool.begin().await?;
+        let mut updated_series = Vec::new();
+
+        for (series_id, update_data) in updates {
+            let updated = self.update_series_in_transaction(&mut tx, series_id, update_data).await?;
+            updated_series.push(updated);
+        }
+
+        tx.commit().await?;
+        Ok(updated_series)
+    }
+
+    async fn find_series_by_pattern(&self, pattern: &str) -> Result<Vec<TaskSeries>, CoreError> {
+        let series: Vec<TaskSeries> = sqlx::query_as(
+            "SELECT ts.* FROM task_series ts 
+             JOIN tasks t ON ts.template_task_id = t.id 
+             WHERE t.name LIKE $1 OR ts.rrule LIKE $1"
+        )
+        .bind(format!("%{}%", pattern))
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(series)
+    }
+
+    async fn get_series_statistics(&self, series_id: Uuid) -> Result<SeriesStatistics, CoreError> {
+        // Get basic series info
+        let series: TaskSeries = sqlx::query_as("SELECT * FROM task_series WHERE id = $1")
+            .bind(series_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| CoreError::NotFound(format!("Series with id {} not found", series_id)))?;
+
+        // Get task statistics
+        let task_stats: (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT 
+                COUNT(*) as total,
+                COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed,
+                COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending,
+                COUNT(CASE WHEN status = 'cancelled' THEN 1 END) as cancelled
+             FROM tasks 
+             WHERE series_id = $1"
+        )
+        .bind(series_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        // Get exception statistics
+        let exception_stats: (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT 
+                COUNT(*) as total,
+                COUNT(CASE WHEN exception_type = 'skip' THEN 1 END) as skip,
+                COUNT(CASE WHEN exception_type = 'override' THEN 1 END) as override,
+                COUNT(CASE WHEN exception_type = 'move' THEN 1 END) as move
+             FROM series_exceptions 
+             WHERE series_id = $1"
+        )
+        .bind(series_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        // Get time-based statistics
+        let time_stats: (Option<DateTime<Utc>>, Option<DateTime<Utc>>) = sqlx::query_as(
+            "SELECT MIN(due_at), MAX(due_at) FROM tasks WHERE series_id = $1 AND due_at IS NOT NULL"
+        )
+        .bind(series_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        // Calculate next occurrence using RecurrenceManager
+        let template_task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id = $1")
+            .bind(series.template_task_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| CoreError::NotFound(format!("Template task not found")))?;
+
+        let exceptions: Vec<SeriesException> = sqlx::query_as(
+            "SELECT * FROM series_exceptions WHERE series_id = $1"
+        )
+        .bind(series_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let next_occurrence = if series.active {
+            let recurrence_manager = RecurrenceManager::new(series.clone(), template_task, exceptions)?;
+            recurrence_manager.next_occurrence_after(Utc::now())? 
+        } else {
+            None
+        };
+
+        // Calculate completion rate for health score
+        let completion_rate = if task_stats.0 > 0 {
+            task_stats.1 as f64 / task_stats.0 as f64
+        } else {
+            1.0
+        };
+
+        // Simple health score: completion rate * activity factor * consistency factor
+        let activity_factor = if series.active { 1.0 } else { 0.8 };
+        let consistency_factor = if (exception_stats.0 as f64) / (task_stats.0.max(1) as f64) < 0.2 { 1.0 } else { 0.9 };
+        let health_score = completion_rate * activity_factor * consistency_factor;
+
+        Ok(SeriesStatistics {
+            series_id,
+            total_occurrences_created: task_stats.0 as u32,
+            completed_occurrences: task_stats.1 as u32,
+            pending_occurrences: task_stats.2 as u32,
+            cancelled_occurrences: task_stats.3 as u32,
+            total_exceptions: exception_stats.0 as u32,
+            skip_exceptions: exception_stats.1 as u32,
+            override_exceptions: exception_stats.2 as u32,
+            move_exceptions: exception_stats.3 as u32,
+            first_occurrence: time_stats.0,
+            last_occurrence: time_stats.1,
+            next_occurrence,
+            average_completion_time_hours: None, // Could be calculated if needed
+            series_health_score: health_score,
+        })
+    }
 }
 
 impl SqliteRepository {
@@ -1713,86 +2065,6 @@ impl SqliteRepository {
         Ok(())
     }
 
-    async fn update_series_in_transaction<'a>(
-        &self,
-        tx: &mut Transaction<'a, Sqlite>,
-        id: Uuid,
-        data: UpdateSeriesData,
-    ) -> Result<TaskSeries, CoreError> {
-        // Check if series exists
-        let current_series: TaskSeries = sqlx::query_as("SELECT * FROM task_series WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&mut **tx)
-            .await?
-            .ok_or_else(|| CoreError::NotFound(format!("Series with id {} not found", id)))?;
-
-        let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new("UPDATE task_series SET ");
-        let mut updated = false;
-
-        if let Some(rrule) = &data.rrule {
-            // Validate the new RRULE
-            let timezone = data.timezone.as_deref().unwrap_or(&current_series.timezone);
-            RecurrenceManager::validate_rrule(rrule, timezone)?;
-            
-            qb.push("rrule = ");
-            qb.push_bind(rrule);
-            updated = true;
-        }
-
-        if let Some(dtstart) = data.dtstart {
-            if updated {
-                qb.push(", ");
-            }
-            qb.push("dtstart = ");
-            qb.push_bind(dtstart);
-            updated = true;
-        }
-
-        if let Some(timezone) = &data.timezone {
-            // Validate timezone
-            RecurrenceManager::validate_rrule(&current_series.rrule, timezone)?;
-            
-            if updated {
-                qb.push(", ");
-            }
-            qb.push("timezone = ");
-            qb.push_bind(timezone);
-            updated = true;
-        }
-
-        if let Some(active) = data.active {
-            if updated {
-                qb.push(", ");
-            }
-            qb.push("active = ");
-            qb.push_bind(active);
-            updated = true;
-        }
-
-        if updated {
-            qb.push(", updated_at = ");
-            qb.push_bind(Utc::now());
-            qb.push(" WHERE id = ");
-            qb.push_bind(id);
-
-            qb.build().execute(&mut **tx).await?;
-
-            // If RRULE or timezone changed, reset materialization boundary
-            if data.rrule.is_some() || data.timezone.is_some() {
-                sqlx::query("UPDATE task_series SET last_materialized_until = NULL WHERE id = $1")
-                    .bind(id)
-                    .execute(&mut **tx)
-                    .await?;
-            }
-        }
-
-        let updated_series: TaskSeries = sqlx::query_as("SELECT * FROM task_series WHERE id = $1")
-            .bind(id)
-            .fetch_one(&mut **tx)
-            .await?;
-
-        Ok(updated_series)
-    }
 
     /// Extract filters from Query structure for materialization window calculation
     fn extract_filters_from_query(&self, query: &Query) -> Vec<crate::models::Filter> {
@@ -1831,6 +2103,141 @@ impl SqliteRepository {
                 self.collect_filters_recursive(right, filters);
             }
         }
+    }
+
+    // ========== Phase 5: Helper Methods ==========
+
+    async fn validate_exception_data(&self, exception: &NewSeriesException) -> Result<(), CoreError> {
+        // Validate series exists
+        let series_exists = sqlx::query("SELECT 1 FROM task_series WHERE id = $1")
+            .bind(exception.series_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .is_some();
+
+        if !series_exists {
+            return Err(CoreError::NotFound(format!("Series with id {} not found", exception.series_id)));
+        }
+
+        // Validate exception type constraints
+        match exception.exception_type {
+            ExceptionType::Skip => {
+                if exception.exception_task_id.is_some() {
+                    return Err(CoreError::InvalidException(
+                        "Skip exceptions cannot have an exception_task_id".to_string()
+                    ));
+                }
+            }
+            ExceptionType::Override | ExceptionType::Move => {
+                if exception.exception_task_id.is_none() {
+                    return Err(CoreError::InvalidException(
+                        format!("{:?} exceptions must have an exception_task_id", exception.exception_type)
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn add_series_exception_in_transaction(&self, tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, exception: NewSeriesException) -> Result<SeriesException, CoreError> {
+        let now = Utc::now();
+
+        let created_exception = SeriesException {
+            series_id: exception.series_id,
+            occurrence_dt: exception.occurrence_dt,
+            exception_type: exception.exception_type,
+            exception_task_id: exception.exception_task_id,
+            notes: exception.notes,
+            created_at: now,
+        };
+
+        sqlx::query(
+            "INSERT INTO series_exceptions (series_id, occurrence_dt, exception_type, exception_task_id, notes, created_at) 
+             VALUES ($1, $2, $3, $4, $5, $6)"
+        )
+        .bind(created_exception.series_id)
+        .bind(created_exception.occurrence_dt)
+        .bind(&created_exception.exception_type)
+        .bind(created_exception.exception_task_id)
+        .bind(&created_exception.notes)
+        .bind(created_exception.created_at)
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(created_exception)
+    }
+
+    async fn update_series_in_transaction(&self, tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, series_id: Uuid, data: UpdateSeriesData) -> Result<TaskSeries, CoreError> {
+        let mut query_parts = Vec::new();
+        let mut params: Vec<String> = Vec::new();
+
+        if let Some(rrule) = &data.rrule {
+            query_parts.push("rrule = ?");
+            params.push(rrule.clone());
+        }
+
+        if let Some(dtstart) = &data.dtstart {
+            query_parts.push("dtstart = ?");
+            params.push(dtstart.to_rfc3339());
+        }
+
+        if let Some(timezone) = &data.timezone {
+            query_parts.push("timezone = ?");
+            params.push(timezone.clone());
+        }
+
+        if let Some(active) = &data.active {
+            query_parts.push("active = ?");
+            params.push(if *active { "1".to_string() } else { "0".to_string() });
+        }
+
+        if query_parts.is_empty() {
+            // No updates, just return current series
+            let series: TaskSeries = sqlx::query_as("SELECT * FROM task_series WHERE id = ?")
+                .bind(series_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or_else(|| CoreError::NotFound(format!("Series with id {} not found", series_id)))?;
+            return Ok(series);
+        }
+
+        query_parts.push("updated_at = ?");
+        let now = Utc::now();
+        params.push(now.to_rfc3339());
+
+        let query = format!(
+            "UPDATE task_series SET {} WHERE id = ?",
+            query_parts.join(", ")
+        );
+
+        let mut sqlx_query = sqlx::query(&query);
+        for param in params {
+            sqlx_query = sqlx_query.bind(param);
+        }
+        sqlx_query = sqlx_query.bind(series_id);
+
+        let result = sqlx_query.execute(&mut **tx).await?;
+
+        if result.rows_affected() == 0 {
+            return Err(CoreError::NotFound(format!("Series with id {} not found", series_id)));
+        }
+
+        // Reset materialization boundary if RRULE or timezone changed
+        if data.rrule.is_some() || data.timezone.is_some() || data.dtstart.is_some() {
+            sqlx::query("UPDATE task_series SET last_materialized_until = NULL WHERE id = ?")
+                .bind(series_id)
+                .execute(&mut **tx)
+                .await?;
+        }
+
+        // Fetch and return updated series
+        let updated_series: TaskSeries = sqlx::query_as("SELECT * FROM task_series WHERE id = ?")
+            .bind(series_id)
+            .fetch_one(&mut **tx)
+            .await?;
+
+        Ok(updated_series)
     }
 }
 

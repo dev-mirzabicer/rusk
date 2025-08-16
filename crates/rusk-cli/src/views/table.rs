@@ -14,6 +14,10 @@ pub struct ViewTask {
     pub project_name: Option<String>,
     pub tags: Vec<String>,
     pub depth: usize,
+    pub series_id: Option<Uuid>,
+    pub is_template: bool,
+    pub has_exceptions: bool,
+    pub timezone: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -38,7 +42,30 @@ pub fn display_tasks(tasks: &[ViewTask]) {
         row.add_cell(Cell::new(&task.id.to_string()[..7]));
 
         let indentation = "  ".repeat(task.depth);
-        let mut name_cell = Cell::new(format!("{}{}", indentation, &task.name));
+        
+        // Build name with visual indicators
+        let mut display_name = String::new();
+        display_name.push_str(&indentation);
+        
+        // Add series indicator
+        if task.series_id.is_some() {
+            display_name.push('↻'); // Recurring symbol
+            display_name.push(' ');
+        }
+        
+        display_name.push_str(&task.name);
+        
+        // Add template badge
+        if task.is_template {
+            display_name.push_str(" (Template)");
+        }
+        
+        // Add exception indicator
+        if task.has_exceptions {
+            display_name.push_str(" ⚠");
+        }
+        
+        let mut name_cell = Cell::new(display_name);
 
         // Style based on status and priority
         match task.status {
@@ -71,17 +98,25 @@ pub fn display_tasks(tasks: &[ViewTask]) {
             let today = now.date_naive();
             let due_date = due_at.date_naive();
 
-            let humanized_due_at = due_at.humanize();
+            let mut due_text = due_at.humanize();
+            
+            // Add timezone abbreviation for recurring tasks
+            if task.series_id.is_some() && task.timezone.is_some() {
+                // For now, just show the timezone name
+                // In a full implementation, we'd convert to local time and show abbreviation
+                due_text = format!("{}", due_text);
+            }
+            
             if task.status == TaskStatus::Pending {
                 if due_at < now {
-                    Cell::new(humanized_due_at).fg(Color::Red) // Overdue
+                    Cell::new(due_text).fg(Color::Red) // Overdue
                 } else if due_date == today {
-                    Cell::new(humanized_due_at).fg(Color::Yellow) // Due today
+                    Cell::new(due_text).fg(Color::Yellow) // Due today
                 } else {
-                    Cell::new(humanized_due_at)
+                    Cell::new(due_text)
                 }
             } else {
-                Cell::new(humanized_due_at)
+                Cell::new(due_text)
             }
         } else {
             Cell::new("None")

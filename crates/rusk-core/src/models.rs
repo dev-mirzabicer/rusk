@@ -462,3 +462,75 @@ impl Default for MaterializationConfig {
         }
     }
 }
+
+/// Statistics for a recurring series (Phase 5)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeriesStatistics {
+    pub series_id: Uuid,
+    pub total_occurrences_created: u32,
+    pub completed_occurrences: u32,
+    pub pending_occurrences: u32,
+    pub cancelled_occurrences: u32,
+    pub total_exceptions: u32,
+    pub skip_exceptions: u32,
+    pub override_exceptions: u32,
+    pub move_exceptions: u32,
+    pub first_occurrence: Option<DateTime<Utc>>,
+    pub last_occurrence: Option<DateTime<Utc>>,
+    pub next_occurrence: Option<DateTime<Utc>>,
+    pub average_completion_time_hours: Option<f64>,
+    pub series_health_score: f64, // 0.0-1.0 based on completion rate and consistency
+}
+
+/// Bulk exception operation result (Phase 5)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkExceptionResult {
+    pub successful_operations: u32,
+    pub failed_operations: u32,
+    pub errors: Vec<String>,
+    pub created_exceptions: Vec<SeriesException>,
+}
+
+/// Timezone preference settings (Phase 5)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimezonePreferences {
+    pub user_timezone: String,
+    pub display_format: TimezoneDisplayFormat,
+    pub auto_detect_dst: bool,
+    pub show_timezone_abbreviations: bool,
+    pub preferred_time_format: TimeFormat,
+}
+
+/// Display format options for timezones (Phase 5)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TimezoneDisplayFormat {
+    /// Show full timezone name (America/New_York)
+    Full,
+    /// Show timezone abbreviation (EST/EDT)
+    Abbreviation,
+    /// Show UTC offset (+05:00)
+    Offset,
+    /// Show timezone abbreviation with offset (EST-05:00)
+    AbbreviationWithOffset,
+}
+
+/// Time format preferences (Phase 5)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TimeFormat {
+    /// 24-hour format (14:30)
+    TwentyFourHour,
+    /// 12-hour format (2:30 PM)
+    TwelveHour,
+}
+
+impl Default for TimezonePreferences {
+    fn default() -> Self {
+        Self {
+            user_timezone: "UTC".to_string(),
+            display_format: TimezoneDisplayFormat::AbbreviationWithOffset,
+            auto_detect_dst: true,
+            show_timezone_abbreviations: true,
+            preferred_time_format: TimeFormat::TwentyFourHour,
+        }
+    }
+}

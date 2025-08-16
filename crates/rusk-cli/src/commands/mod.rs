@@ -9,3 +9,4 @@ pub mod edit;
 
 pub mod list;
 pub mod project;
+pub mod recurrence;

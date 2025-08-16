@@ -11,6 +11,7 @@ mod commands;
 mod config;
 mod parser;
 mod query_parser;
+mod timezone;
 mod util;
 mod views;
 
@@ -88,6 +89,9 @@ async fn main() {
         cli::Commands::Project(command) => {
             commands::project::project_command(&repository, command).await
         }
+        cli::Commands::Recur(command) => {
+            commands::recurrence::recurrence_command(&repository, command).await
+        }
     };
 
     if let Err(e) = result {
@@ -120,6 +124,30 @@ fn handle_error(err: anyhow::Error) {
             }
             CoreError::InvalidInput(s) => {
                 eprintln!("{} Invalid input: {}", "Error:".style(error_style), s);
+                eprintln!("{} Check your command syntax with --help", "Tip:".cyan());
+            }
+            CoreError::InvalidTimezone(s) => {
+                eprintln!("{} {}", "Error:".style(error_style), s);
+                eprintln!("{} Use standard IANA timezone names like 'America/New_York'", "Tip:".cyan());
+                eprintln!("{} Run 'rusk recur timezones' to see common timezones", "Tip:".cyan());
+            }
+            CoreError::InvalidRRule(s) => {
+                eprintln!("{} Invalid recurrence rule: {}", "Error:".style(error_style), s);
+                eprintln!("{} Use shortcuts like --every daily or valid RRULE syntax", "Tip:".cyan());
+                eprintln!("{} Example: --every weekdays --at '9:00 AM'", "Example:".green());
+            }
+            CoreError::SeriesNotFound(s) => {
+                eprintln!("{} Series not found: {}", "Error:".style(error_style), s);
+                eprintln!("{} This task may not be part of a recurring series", "Tip:".cyan());
+                eprintln!("{} Use 'rusk list' to see all tasks and their series status", "Tip:".cyan());
+            }
+            CoreError::MaterializationError(s) => {
+                eprintln!("{} Materialization error: {}", "Error:".style(error_style), s);
+                eprintln!("{} This may be due to invalid recurrence configuration", "Tip:".cyan());
+            }
+            CoreError::InvalidException(s) => {
+                eprintln!("{} Invalid exception: {}", "Error:".style(error_style), s);
+                eprintln!("{} Check that the occurrence date exists in the series", "Tip:".cyan());
             }
             CoreError::CircularDependency(task, depends_on) => {
                 eprintln!(

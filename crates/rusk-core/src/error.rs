@@ -41,6 +41,9 @@ pub enum CoreError {
     #[error("Materialization error: {0}")]
     MaterializationError(String),
 
+    #[error("Series not completed: {0}")]
+    SeriesNotCompleted(String),
+
     #[error("An unknown error has occurred.")]
     Unknown,
 }

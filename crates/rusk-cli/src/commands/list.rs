@@ -29,6 +29,10 @@ pub async fn list_tasks(repo: &impl Repository, command: ListCommand, config: &C
                 project_name: t.project_name,
                 tags,
                 depth: t.depth as usize,
+                series_id: t.series_id,
+                is_template: false, // TODO: Determine from series relationship
+                has_exceptions: false, // TODO: Implement exception checking
+                timezone: None, // TODO: Get from series if applicable
             }
         })
         .collect();
