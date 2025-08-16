@@ -2,6 +2,14 @@
 name = "rusk-core"
 version = "0.1.0"
 edition = "2021"
+authors = ["Rusk Development Team"]
+description = "Core library for Rusk task manager with series-based recurrence and timezone support"
+license = "MIT OR Apache-2.0"
+readme = "../../README.md"
+homepage = "https://github.com/rusk-task-manager/rusk"
+repository = "https://github.com/rusk-task-manager/rusk"
+keywords = ["task", "management", "recurrence", "database", "sqlite"]
+categories = ["database", "data-structures"]
 
 [dependencies]
 anyhow = "1.0"
@@ -17,3 +25,16 @@ uuid = { version = "1.0", features = ["v4", "serde", "v7"] }
 serde_with = "3.8.1"
 tokio = { version = "1", features = ["full"] }
 rrule = "0.10.0"
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+rstest = { workspace = true }
+proptest = { workspace = true }
+tempfile = { workspace = true }
+criterion = { workspace = true }
+fastrand = "2.0"
+
+[[bench]]
+name = "simple_benchmarks"
+harness = false
+

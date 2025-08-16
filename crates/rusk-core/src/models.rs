@@ -1,3 +1,8 @@
+//! # Data Models for Rusk Task Manager
+//!
+//! This module contains all core data structures used throughout the Rusk
+//! task management system, including tasks, projects, series, and supporting types.
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -5,23 +10,59 @@ use std::str::FromStr;
 use thiserror::Error;
 use uuid::Uuid;
 
+/// A project groups related tasks for organization
+/// 
+/// Projects provide a way to organize tasks into meaningful groups.
+/// All tasks within a project can be filtered and managed together.
+/// 
+/// # Examples
+/// 
+/// ```rust
+/// use rusk_core::models::Project;
+/// use uuid::Uuid;
+/// use chrono::Utc;
+/// 
+/// let project = Project {
+///     id: Uuid::now_v7(),
+///     name: "Website Redesign".to_string(),
+///     description: Some("Complete overhaul of company website".to_string()),
+///     created_at: Utc::now(),
+/// };
+/// ```
 #[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct Project {
+    /// Unique identifier using UUIDv7 for time-ordered performance
     #[serde(with = "uuid::serde::compact")]
     pub id: Uuid,
+    /// Human-readable project name (must be unique)
     pub name: String,
+    /// Optional detailed description of the project
     pub description: Option<String>,
+    /// Timestamp when the project was created (UTC)
     pub created_at: DateTime<Utc>,
 }
 
+/// Status of a task indicating its current state
+/// 
+/// Task status follows a simple lifecycle:
+/// - `Pending`: Default state for new tasks
+/// - `Completed`: Task has been finished successfully
+/// - `Cancelled`: Task was stopped without completion
+/// 
+/// For recurring tasks, completing a task generates the next occurrence.
+/// Cancelling a recurring task stops the series generation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, sqlx::Type)]
 #[sqlx(type_name = "TEXT", rename_all = "lowercase")]
 pub enum TaskStatus {
+    /// Task is active and needs to be completed
     Pending,
+    /// Task has been finished successfully
     Completed,
+    /// Task was stopped without completion
     Cancelled,
 }
 
+/// Error type for invalid task status parsing
 #[derive(Error, Debug, PartialEq)]
 #[error("Invalid task status: {0}")]
 pub struct ParseTaskStatusError(String);
@@ -39,15 +80,34 @@ impl FromStr for TaskStatus {
     }
 }
 
+/// Priority level for tasks to aid in organization and scheduling
+/// 
+/// Priority levels help users focus on the most important tasks first.
+/// Higher priority tasks can be filtered and displayed prominently.
+/// 
+/// # Examples
+/// 
+/// ```rust
+/// use rusk_core::models::TaskPriority;
+/// use std::str::FromStr;
+/// 
+/// let high_priority = TaskPriority::from_str("high").unwrap();
+/// assert_eq!(high_priority, TaskPriority::High);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, sqlx::Type)]
 #[sqlx(type_name = "TEXT", rename_all = "lowercase")]
 pub enum TaskPriority {
+    /// No specific priority (default)
     None,
+    /// Low priority task
     Low,
+    /// Medium priority task
     Medium,
+    /// High priority task requiring attention
     High,
 }
 
+/// Error type for invalid task priority parsing
 #[derive(Error, Debug, PartialEq)]
 #[error("Invalid task priority: {0}")]
 pub struct ParseTaskPriorityError(String);
@@ -66,23 +126,73 @@ impl FromStr for TaskPriority {
     }
 }
 
+/// Core task entity representing a single task or task instance
+/// 
+/// Tasks are the fundamental building blocks of the system. They can be:
+/// - **Regular tasks**: Single, non-recurring tasks
+/// - **Template tasks**: Define the pattern for a recurring series
+/// - **Instance tasks**: Generated occurrences of a recurring series
+/// 
+/// # Field Relationships
+/// 
+/// - `series_id` is `None` for regular and template tasks
+/// - `series_id` points to a series for instance tasks
+/// - Template tasks are referenced by `task_series.template_task_id`
+/// - Tasks can be organized into projects via `project_id`
+/// - Tasks can have subtasks via `parent_id` relationships
+/// 
+/// # Examples
+/// 
+/// ```rust
+/// use rusk_core::models::{Task, TaskStatus, TaskPriority};
+/// use uuid::Uuid;
+/// use chrono::Utc;
+/// 
+/// // Regular task
+/// let task = Task {
+///     id: Uuid::now_v7(),
+///     name: "Buy groceries".to_string(),
+///     description: Some("Get milk, bread, and eggs".to_string()),
+///     status: TaskStatus::Pending,
+///     priority: TaskPriority::Medium,
+///     due_at: Some(Utc::now()),
+///     // ... other fields
+///     series_id: None, // Regular task
+///     # completed_at: None,
+///     # created_at: Utc::now(),
+///     # updated_at: Utc::now(),
+///     # project_id: None,
+///     # parent_id: None,
+/// };
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Task {
+    /// Unique task identifier using UUIDv7 for time-ordered performance
     pub id: Uuid,
+    /// Human-readable task name
     pub name: String,
+    /// Optional detailed description
     pub description: Option<String>,
+    /// Current status of the task
     pub status: TaskStatus,
+    /// Priority level for organization
     pub priority: TaskPriority,
+    /// When the task is due (UTC timezone)
     pub due_at: Option<DateTime<Utc>>,
+    /// When the task was completed (UTC timezone)
     pub completed_at: Option<DateTime<Utc>>,
+    /// When the task was created (UTC timezone)
     pub created_at: DateTime<Utc>,
+    /// When the task was last modified (UTC timezone)
     pub updated_at: DateTime<Utc>,
+    /// Optional project association
     pub project_id: Option<Uuid>,
+    /// Optional parent task for subtask relationships
     pub parent_id: Option<Uuid>,
-    /// Optional foreign key to task_series (for instances only)
-    /// Template tasks: series_id = None, referenced by task_series.template_task_id
-    /// Instance tasks: series_id points to their series, due_at set to occurrence time  
-    /// Regular tasks: series_id = None (unchanged behavior)
+    /// Series relationship for recurring tasks
+    /// 
+    /// - `None`: Regular or template task
+    /// - `Some(uuid)`: Instance task belonging to a series
     pub series_id: Option<Uuid>,
 }
 
@@ -435,33 +545,6 @@ impl SeriesOccurrence {
     }
 }
 
-/// Configuration for materialization behavior - core version
-/// This is separate from the CLI config to allow for type differences
-#[derive(Debug, Clone)]
-pub struct MaterializationConfig {
-    /// Default materialization window in days
-    pub lookahead_days: i64,
-    /// Always maintain N future instances
-    pub min_upcoming_instances: usize,
-    /// Limit for batch operations
-    pub max_batch_size: usize,
-    /// Whether to materialize missed past occurrences
-    pub enable_catchup: bool,
-    /// Include near-past in windows (days)
-    pub materialization_grace_days: i64,
-}
-
-impl Default for MaterializationConfig {
-    fn default() -> Self {
-        Self {
-            lookahead_days: 30,
-            min_upcoming_instances: 1,
-            max_batch_size: 100,
-            enable_catchup: false,
-            materialization_grace_days: 3,
-        }
-    }
-}
 
 /// Statistics for a recurring series (Phase 5)
 #[derive(Debug, Clone, Serialize, Deserialize)]

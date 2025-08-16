@@ -110,16 +110,11 @@ async fn info_command<R: Repository>(
         println!("No upcoming occurrences (series may have ended)");
     } else {
         for (i, occurrence) in next_occurrences.iter().enumerate() {
-            let formatted_time = format_timezone_display(occurrence.effective_at, &series.timezone)
-                .unwrap_or_else(|_| occurrence.effective_at.format("%Y-%m-%d %H:%M:%S UTC").to_string());
+            let formatted_time = format_timezone_display(occurrence.effective_dt, &series.timezone)
+                .unwrap_or_else(|_| occurrence.effective_dt.format("%Y-%m-%d %H:%M:%S UTC").to_string());
             
             let status = if occurrence.has_exception {
-                match occurrence.exception_type {
-                    Some(ExceptionType::Skip) => " (SKIPPED)".red().to_string(),
-                    Some(ExceptionType::Override) => " (OVERRIDDEN)".yellow().to_string(),
-                    Some(ExceptionType::Move) => " (MOVED)".blue().to_string(),
-                    None => "".to_string(),
-                }
+                " (EXCEPTION)".yellow().to_string()
             } else {
                 "".to_string()
             };
@@ -172,16 +167,11 @@ async fn preview_command<R: Repository>(
     println!();
     
     for (i, occurrence) in occurrences.iter().enumerate() {
-        let formatted_time = format_timezone_display(occurrence.effective_at, &series.timezone)
-            .unwrap_or_else(|_| occurrence.effective_at.format("%Y-%m-%d %H:%M:%S UTC").to_string());
+        let formatted_time = format_timezone_display(occurrence.effective_dt, &series.timezone)
+            .unwrap_or_else(|_| occurrence.effective_dt.format("%Y-%m-%d %H:%M:%S UTC").to_string());
         
         let status = if occurrence.has_exception {
-            match occurrence.exception_type {
-                Some(ExceptionType::Skip) => " (SKIPPED)".red().to_string(),
-                Some(ExceptionType::Override) => " (OVERRIDDEN)".yellow().to_string(),
-                Some(ExceptionType::Move) => " (MOVED)".blue().to_string(),
-                None => "".to_string(),
-            }
+            " (EXCEPTION)".yellow().to_string()
         } else {
             "".to_string()
         };
@@ -685,7 +675,7 @@ async fn bulk_skip_command<R: Repository>(
         
         for occurrence in occurrences {
             if occurrence.is_visible() {
-                dates_to_skip.push(occurrence.scheduled_at);
+                dates_to_skip.push(occurrence.occurrence_dt);
             }
         }
     } else {

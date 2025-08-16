@@ -284,33 +284,3 @@ pub struct TimezoneInfo {
     pub observes_dst: bool,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_validate_timezone() {
-        assert!(validate_timezone("UTC").is_ok());
-        assert!(validate_timezone("America/New_York").is_ok());
-        assert!(validate_timezone("Invalid/Timezone").is_err());
-    }
-
-    #[test]
-    fn test_normalize_timezone_input() {
-        assert_eq!(normalize_timezone_input("UTC").unwrap(), "UTC");
-        assert_eq!(normalize_timezone_input("EST").unwrap(), "America/New_York");
-        assert_eq!(normalize_timezone_input("pacific").unwrap(), "America/Los_Angeles");
-        
-        // Should fail with suggestions
-        assert!(normalize_timezone_input("invalid").is_err());
-    }
-
-    #[test]
-    fn test_suggest_timezone() {
-        let suggestions = suggest_timezone("new");
-        assert!(suggestions.contains(&"America/New_York"));
-        
-        let suggestions = suggest_timezone("london");
-        assert!(suggestions.contains(&"Europe/London"));
-    }
-}

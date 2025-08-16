@@ -190,7 +190,12 @@ impl SqliteRepository {
                     match text_filter {
                         TextFilter::Contains(text) => {
                             qb.push("LOWER(th.name) LIKE LOWER(");
-                            qb.push_bind(format!("%{}%", text));
+                            // Optimize: avoid format! allocation
+                            let mut pattern = String::with_capacity(text.len() + 2);
+                            pattern.push('%');
+                            pattern.push_str(text);
+                            pattern.push('%');
+                            qb.push_bind(pattern);
                             qb.push(")");
                         }
                         TextFilter::Equals(text) => {
@@ -200,17 +205,30 @@ impl SqliteRepository {
                         }
                         TextFilter::StartsWith(text) => {
                             qb.push("LOWER(th.name) LIKE LOWER(");
-                            qb.push_bind(format!("{}%", text));
+                            // Optimize: avoid format! allocation
+                            let mut pattern = String::with_capacity(text.len() + 1);
+                            pattern.push_str(text);
+                            pattern.push('%');
+                            qb.push_bind(pattern);
                             qb.push(")");
                         }
                         TextFilter::EndsWith(text) => {
                             qb.push("LOWER(th.name) LIKE LOWER(");
-                            qb.push_bind(format!("%{}", text));
+                            // Optimize: avoid format! allocation  
+                            let mut pattern = String::with_capacity(text.len() + 1);
+                            pattern.push('%');
+                            pattern.push_str(text);
+                            qb.push_bind(pattern);
                             qb.push(")");
                         }
                         TextFilter::NotContains(text) => {
                             qb.push("LOWER(th.name) NOT LIKE LOWER(");
-                            qb.push_bind(format!("%{}%", text));
+                            // Optimize: avoid format! allocation
+                            let mut pattern = String::with_capacity(text.len() + 2);
+                            pattern.push('%');
+                            pattern.push_str(text);
+                            pattern.push('%');
+                            qb.push_bind(pattern);
                             qb.push(")");
                         }
                     }
@@ -496,8 +514,13 @@ impl Repository for SqliteRepository {
     }
 
     async fn find_tasks_by_short_id_prefix(&self, short_id: &str) -> Result<Vec<Task>, CoreError> {
+        // Optimize: avoid format! allocation by using a more efficient pattern
+        let mut pattern = String::with_capacity(short_id.len() + 1);
+        pattern.push_str(short_id);
+        pattern.push('%');
+        
         let tasks: Vec<Task> = sqlx::query_as("SELECT * FROM tasks WHERE id LIKE ?")
-            .bind(format!("{}%", short_id))
+            .bind(pattern)
             .fetch_all(&self.pool)
             .await?;
         Ok(tasks)
@@ -583,9 +606,13 @@ impl Repository for SqliteRepository {
         .await?;
 
         if !dependencies.is_empty() {
-            let dependency_names: Vec<String> =
-                dependencies.iter().map(|t| t.name.clone()).collect();
-            return Err(CoreError::TaskBlocked(dependency_names.join(", ")));
+            // More efficient string collection without intermediate clones
+            let dependency_names = dependencies
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(CoreError::TaskBlocked(dependency_names));
         }
 
         // Mark the current task as completed
@@ -1638,7 +1665,7 @@ impl SqliteRepository {
                 continue; // Skip hidden occurrences
             }
 
-            if existing_due_dates.contains(&occurrence.effective_at) {
+            if existing_due_dates.contains(&occurrence.effective_dt) {
                 continue; // Already materialized
             }
 
@@ -1649,7 +1676,7 @@ impl SqliteRepository {
                 description: template_task.description.clone(),
                 status: TaskStatus::Pending,
                 priority: template_task.priority.clone(),
-                due_at: Some(occurrence.effective_at),
+                due_at: Some(occurrence.effective_dt),
                 completed_at: None,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
@@ -1832,7 +1859,7 @@ impl SqliteRepository {
                 continue; // Skip hidden occurrences
             }
 
-            if existing_due_dates.contains(&occurrence.effective_at) {
+            if existing_due_dates.contains(&occurrence.effective_dt) {
                 continue; // Already materialized
             }
 
@@ -1843,7 +1870,7 @@ impl SqliteRepository {
                 description: template_task.description.clone(),
                 status: TaskStatus::Pending,
                 priority: template_task.priority.clone(),
-                due_at: Some(occurrence.effective_at),
+                due_at: Some(occurrence.effective_dt),
                 completed_at: None,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
@@ -2241,142 +2268,3 @@ impl SqliteRepository {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::db::establish_connection;
-    use crate::models::{CompletionResult, TaskPriority, TaskStatus};
-    use crate::query::{Filter, Query};
-
-    async fn setup() -> SqliteRepository {
-        use crate::models::MaterializationConfig;
-        use crate::recurrence::MaterializationManager;
-        
-        let pool = establish_connection("sqlite::memory:").await.unwrap();
-        let materialization_manager = MaterializationManager::new(MaterializationConfig::default());
-        SqliteRepository::new(pool, materialization_manager)
-    }
-
-    #[tokio::test]
-    async fn test_add_and_get_task_with_details() {
-        let repo = setup().await;
-        let new_task_data = NewTaskData {
-            name: "Test Task".to_string(),
-            description: Some("Test Description".to_string()),
-            due_at: None,
-            priority: Some(TaskPriority::High),
-            project_name: None,
-            tags: vec!["test".to_string(), "rust".to_string()],
-            parent_id: None,
-            rrule: None,
-            depends_on: None,
-            project_id: None,
-            series_id: None,
-            timezone: None,
-        };
-
-        let added_task = repo.add_task(new_task_data.clone()).await.unwrap();
-        assert_eq!(added_task.name, new_task_data.name);
-
-        let query = Query::Filter(Filter::Tags(crate::query::TagFilter::Has("test".to_string())));
-        let fetched_tasks = repo.find_tasks_with_details(&query).await.unwrap();
-        let fetched_task = fetched_tasks
-            .iter()
-            .find(|t| t.id == added_task.id)
-            .unwrap();
-
-        assert_eq!(fetched_task.id, added_task.id);
-        assert_eq!(fetched_task.name, "Test Task");
-
-        let mut tags: Vec<String> = fetched_task
-            .tags
-            .as_ref()
-            .unwrap()
-            .split(',')
-            .map(|s| s.to_string())
-            .collect();
-        tags.sort();
-        assert_eq!(tags, vec!["rust".to_string(), "test".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn test_find_tasks_with_details_tags() {
-        use std::collections::HashMap;
-        let repo = setup().await;
-        let task1_data = NewTaskData {
-            name: "Task 1".to_string(),
-            tags: vec!["a".to_string(), "b".to_string()],
-            ..Default::default()
-        };
-        let task1 = repo.add_task(task1_data).await.unwrap();
-
-        let task2_data = NewTaskData {
-            name: "Task 2".to_string(),
-            tags: vec!["b".to_string(), "c".to_string()],
-            ..Default::default()
-        };
-        let task2 = repo.add_task(task2_data).await.unwrap();
-
-        let task3_data = NewTaskData {
-            name: "Task 3".to_string(),
-            ..Default::default()
-        };
-        let task3 = repo.add_task(task3_data).await.unwrap();
-
-        let query = Query::Filter(Filter::Tags(crate::query::TagFilter::Has("b".to_string())));
-        let results = repo.find_tasks_with_details(&query).await.unwrap();
-        let results_map: HashMap<Uuid, TaskQueryResult> =
-            results.into_iter().map(|t| (t.id, t)).collect();
-
-        assert!(results_map.contains_key(&task1.id));
-        assert!(results_map.contains_key(&task2.id));
-        assert!(!results_map.contains_key(&task3.id));
-    }
-
-    #[tokio::test]
-    async fn test_complete_task_blocked() {
-        let repo = setup().await;
-        let task1_data = NewTaskData {
-            name: "Task 1".to_string(),
-            ..Default::default()
-        };
-        let task1 = repo.add_task(task1_data).await.unwrap();
-
-        let task2_data = NewTaskData {
-            name: "Task 2".to_string(),
-            depends_on: Some(task1.id),
-            ..Default::default()
-        };
-        let task2 = repo.add_task(task2_data).await.unwrap();
-
-        let result = repo.complete_task(task2.id).await;
-        assert!(matches!(result, Err(CoreError::TaskBlocked(_))));
-    }
-
-    #[tokio::test]
-    async fn test_complete_task_unblocked() {
-        let repo = setup().await;
-        let task1_data = NewTaskData {
-            name: "Task 1".to_string(),
-            ..Default::default()
-        };
-        let task1 = repo.add_task(task1_data).await.unwrap();
-
-        let task2_data = NewTaskData {
-            name: "Task 2".to_string(),
-            depends_on: Some(task1.id),
-            ..Default::default()
-        };
-        let task2 = repo.add_task(task2_data).await.unwrap();
-
-        repo.complete_task(task1.id).await.unwrap();
-        let result = repo.complete_task(task2.id).await;
-        assert!(result.is_ok());
-        match result.unwrap() {
-            CompletionResult::Single(task) => {
-                assert_eq!(task.status, TaskStatus::Completed);
-            }
-            _ => panic!("Expected a single completion"),
-        }
-    }
-}

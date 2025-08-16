@@ -1,9 +1,24 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use rusk_core::models::{TaskPriority, TaskStatus, EditScope};
 
-/// A feature-rich, high-quality, robust CLI rusk management tool
+/// Rusk - A feature-rich, high-quality, robust CLI task management tool
+/// 
+/// Rusk is a modern task management CLI with advanced features including:
+/// • Powerful recurring task support with timezone awareness
+/// • Natural language date parsing ("next friday", "in 2 weeks")
+/// • Advanced filtering and query system
+/// • Project organization and task dependencies
+/// • Exception handling for recurring tasks (skip, move, override)
+/// • Series management with bulk operations
+/// 
+/// Get started: rusk add "My first task" --due tomorrow
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(
+    author = "Rusk Development Team", 
+    version = env!("CARGO_PKG_VERSION"),
+    about = "A feature-rich, high-quality, robust CLI task management tool",
+    long_about = "Rusk is a modern task management CLI with advanced features including recurring task support with timezone awareness, natural language date parsing, advanced filtering, project organization, and comprehensive series management."
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -11,162 +26,264 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum Commands {
-    /// Add a new task
+    /// Add a new task with optional recurrence, dependencies, and metadata
+    #[command(visible_alias = "a")]
     Add(AddCommand),
-    /// List tasks
+    /// List and filter tasks with powerful query syntax
+    #[command(visible_alias = "ls")]
     List(ListCommand),
-    /// Delete a task
+    /// Delete a task permanently (use --force to skip confirmation)
+    #[command(visible_alias = "rm")]
     Delete(DeleteCommand),
-    /// Mark a task as completed
+    /// Mark a task as completed (automatically handles recurring tasks)
+    #[command(visible_alias = "done")]
     Do(DoCommand),
-    /// Cancel a task
+    /// Cancel a task and mark it as cancelled
     Cancel(CancelCommand),
-    /// Edit a task
+    /// Edit task properties with scope-aware recurring task support
+    #[command(visible_alias = "e")]
     Edit(EditCommand),
-    /// Manage projects
+    /// Manage projects (add, list, delete)
+    #[command(visible_alias = "proj")]
     Project(ProjectCommand),
-    /// Manage recurring task series
+    /// Manage recurring task series (info, preview, skip, move, etc.)
+    #[command(visible_alias = "r")]
     Recur(RecurrenceCommand),
 }
 
+/// Add a new task with comprehensive options
+/// 
+/// Examples:
+///   rusk add "Buy groceries" --due tomorrow --project Personal
+///   rusk add "Daily standup" --every weekdays --at "9:00 AM" --project Work
+///   rusk add "Team meeting" --every weekly --on mon --at "2:00 PM" --until "2025-12-31"
+///   rusk add "Review code" --due "next friday" --depends-on abc123 --priority high
 #[derive(Parser, Debug, Clone)]
 pub struct AddCommand {
-    /// The name of the task
+    /// Task name (required)
+    /// 
+    /// The primary identifier for your task. Can include emojis and special characters.
     pub name: String,
-    /// The description of the task
-    #[clap(short, long)]
+    
+    /// Detailed description of the task
+    #[clap(short, long, help = "Optional description providing additional context")]
     pub description: Option<String>,
-    /// The due date of the task
-    #[clap(short, long)]
+    
+    /// When the task is due (supports natural language)
+    /// 
+    /// Examples: "tomorrow", "next friday", "2025-08-20", "in 2 weeks"
+    #[clap(short, long, help = "Due date (natural language or YYYY-MM-DD format)")]
     pub due: Option<String>,
-    /// The project of the task
-    #[clap(short, long)]
+    
+    /// Project to associate with this task
+    #[clap(short, long, help = "Project name (will be created if it doesn't exist)")]
     pub project: Option<String>,
-    /// Tags to add to the task
-    #[clap(short, long, num_args = 1..)]
+    
+    /// Tags for organization and filtering
+    #[clap(short, long, num_args = 1.., help = "Tags for categorization (can specify multiple)")]
     pub tag: Vec<String>,
-    /// The ID of a task that this task depends on
-    #[clap(long)]
+    
+    /// Task dependency (blocks this task until dependency is completed)
+    #[clap(long, help = "ID of task this depends on (partial IDs accepted)")]
     pub depends_on: Option<String>,
-    /// The priority of the task
-    #[clap(long, value_enum)]
+    
+    /// Task priority level
+    #[clap(long, value_enum, help = "Priority level (none, low, medium, high)")]
     pub priority: Option<TaskPriority>,
-    /// The parent task ID
-    #[clap(long)]
+    
+    /// Parent task for creating subtasks
+    #[clap(long, help = "Parent task ID to create a subtask (partial IDs accepted)")]
     pub parent: Option<String>,
-    /// The recurrence of the task (raw RRULE)
-    #[clap(long, conflicts_with_all = ["every", "on"], help = "Raw RFC 5545 recurrence rule")]
+    
+    /// Advanced: Raw RFC 5545 recurrence rule
+    #[clap(long, conflicts_with_all = ["every", "on"], help = "Raw RRULE for complex patterns (e.g., 'FREQ=WEEKLY;BYDAY=MO,WE,FR')")]
     pub recurrence: Option<String>,
-    /// Human-friendly recurrence frequency
-    #[clap(long, value_enum, help = "Human-friendly frequency (daily, weekly, monthly, etc.)")]
+    
+    /// Simple recurrence pattern
+    #[clap(long, value_enum, help = "Human-friendly recurrence (daily, weekly, monthly, yearly, weekdays, weekends)")]
     pub every: Option<RecurrenceShortcut>,
-    /// Days of week for weekly recurrence
-    #[clap(long, help = "Days of week (mon,tue,wed,thu,fri,sat,sun)")]
+    
+    /// Specific days for weekly recurrence
+    #[clap(long, help = "Days for weekly recurrence (e.g., 'mon,wed,fri' or 'weekdays')")]
     pub on: Option<String>,
-    /// Time of day for recurrence
-    #[clap(long, help = "Time of day for recurrence (e.g., '9:00 AM', '14:30')")]
+    
+    /// Time of day for recurring tasks
+    #[clap(long, help = "Time for recurrence (e.g., '9:00 AM', '14:30', '5pm')")]
     pub at: Option<String>,
-    /// End date for recurrence
-    #[clap(long, help = "End date for recurrence (e.g., '2025-12-31')")]
+    
+    /// End date for finite recurrence
+    #[clap(long, help = "Stop recurring after this date (e.g., '2025-12-31', 'next year')")]
     pub until: Option<String>,
-    /// Maximum number of occurrences
-    #[clap(long, help = "Maximum number of occurrences")]
+    
+    /// Maximum occurrences for finite recurrence
+    #[clap(long, help = "Stop after this many occurrences (alternative to --until)")]
     pub count: Option<u32>,
-    /// Timezone for recurrence
-    #[clap(long, help = "Timezone for recurrence (IANA format, e.g., 'America/New_York')")]
+    
+    /// Timezone for recurrence calculations
+    #[clap(long, help = "IANA timezone (e.g., 'America/New_York', 'Europe/London'). Run 'rusk recur timezones' to list options")]
     pub timezone: Option<String>,
 }
 
+/// Edit an existing task with scope-aware recurring task support
+/// 
+/// For recurring tasks, you'll be prompted to choose scope:
+///   - This occurrence only: Modify just this instance
+///   - This and future: Update the series from this point forward
+///   - Entire series: Modify all past and future occurrences
+/// 
+/// Examples:
+///   rusk edit abc123 --name "Updated task name"
+///   rusk edit def456 --due "next week" --scope occurrence
+///   rusk edit ghi789 --recurrence-clear  # Convert recurring to one-time
 #[derive(Parser, Debug, Clone)]
 pub struct EditCommand {
-    /// The ID of the task to edit
+    /// Task ID to edit (partial IDs accepted)
     pub id: String,
     
-    /// Force scope without prompting (for scripting)
-    #[arg(long, help = "Force scope without interactive prompting")]
+    /// Skip interactive scope prompting (use default or specified scope)
+    #[arg(long, help = "Force scope without interactive prompting (useful for scripts)")]
     pub force_scope: bool,
 
-    #[arg(long)]
+    /// Update task name
+    #[arg(long, help = "New name for the task")]
     pub name: Option<String>,
 
-    #[arg(long)]
+    /// Update task description
+    #[arg(long, help = "New description for the task")]
     pub description: Option<String>,
-    #[arg(long, conflicts_with = "description")]
+    /// Clear the task description
+    #[arg(long, conflicts_with = "description", help = "Remove the description entirely")]
     pub description_clear: bool,
 
-    #[arg(long)]
+    /// Update due date
+    #[arg(long, help = "New due date (natural language or YYYY-MM-DD)")]
     pub due: Option<String>,
-    #[arg(long, conflicts_with = "due")]
+    /// Clear the due date
+    #[arg(long, conflicts_with = "due", help = "Remove the due date")]
     pub due_clear: bool,
 
-    #[arg(long)]
+    /// Update task dependency
+    #[arg(long, help = "New dependency task ID (partial IDs accepted)")]
     pub depends_on: Option<String>,
-    #[arg(long, conflicts_with = "depends_on")]
+    /// Clear task dependency
+    #[arg(long, conflicts_with = "depends_on", help = "Remove dependency relationship")]
     pub depends_on_clear: bool,
 
-    #[arg(long, value_enum)]
+    /// Update task priority
+    #[arg(long, value_enum, help = "New priority level (none, low, medium, high)")]
     pub priority: Option<TaskPriority>,
 
-    #[arg(long)]
+    /// Update parent task
+    #[arg(long, help = "New parent task ID to move this task under (partial IDs accepted)")]
     pub parent: Option<String>,
-    #[arg(long, conflicts_with = "parent")]
+    /// Clear parent relationship
+    #[arg(long, conflicts_with = "parent", help = "Remove parent relationship (move to top level)")]
     pub parent_clear: bool,
 
-    /// How to apply changes (ask|occurrence|future|series)
-    #[arg(long, value_enum, help = "How to apply changes to recurring tasks")]
+    /// How to apply changes to recurring tasks
+    #[arg(long, value_enum, help = "Scope for recurring tasks: occurrence (this only), future (this and future), series (entire series)")]
     pub scope: Option<EditScope>,
     
-    #[arg(long, help = "Update recurrence rule (raw RRULE)")]
+    /// Update recurrence rule
+    #[arg(long, help = "New RRULE for recurring tasks (raw RFC 5545 format)")]
     pub recurrence: Option<String>,
-    #[arg(long, conflicts_with = "recurrence", help = "Remove recurrence (convert to one-time task)")]
+    /// Remove recurrence
+    #[arg(long, conflicts_with = "recurrence", help = "Convert recurring task to one-time task")]
     pub recurrence_clear: bool,
     
     /// Update series timezone
-    #[arg(long, help = "Update series timezone (IANA format)")]
+    #[arg(long, help = "New timezone for recurring series (IANA format, e.g., 'America/New_York')")]
     pub timezone: Option<String>,
 
-    #[arg(long, value_enum)]
+    /// Update task status
+    #[arg(long, value_enum, help = "New status (pending, completed, cancelled)")]
     pub status: Option<TaskStatus>,
 
-    #[arg(long)]
+    /// Update project assignment
+    #[arg(long, help = "New project name (will be created if it doesn't exist)")]
     pub project: Option<String>,
-    #[arg(long, conflicts_with = "project")]
+    /// Clear project assignment
+    #[arg(long, conflicts_with = "project", help = "Remove from project")]
     pub project_clear: bool,
 
-    /// Add tags to the task
-    #[arg(long, num_args = 1..)]
+    /// Add new tags
+    #[arg(long, num_args = 1.., help = "Tags to add (can specify multiple)")]
     pub add_tag: Vec<String>,
 
-    /// Remove tags from the task
-    #[arg(long, num_args = 1..)]
+    /// Remove existing tags
+    #[arg(long, num_args = 1.., help = "Tags to remove (can specify multiple)")]
     pub remove_tag: Vec<String>,
 }
 
+/// Mark a task as completed
+/// 
+/// For recurring tasks, this will automatically generate the next occurrence
+/// based on the recurrence rule. Completed tasks remain in the database for
+/// tracking and can be viewed with appropriate filters.
+/// 
+/// Examples:
+///   rusk do abc123
+///   rusk done def456  # Using alias
 #[derive(Parser, Debug, Clone)]
 pub struct DoCommand {
-    /// The ID of the task to mark as completed
+    /// Task ID to mark as completed (partial IDs accepted)
     pub id: String,
 }
 
+/// Cancel a task and mark it as cancelled
+/// 
+/// Cancelled tasks are distinguished from completed tasks and won't
+/// generate new occurrences for recurring series.
+/// 
+/// Examples:
+///   rusk cancel abc123
 #[derive(Parser, Debug, Clone)]
 pub struct CancelCommand {
-    /// The ID of the task to cancel
+    /// Task ID to cancel (partial IDs accepted)
     pub id: String,
 }
 
+/// Delete a task permanently
+/// 
+/// WARNING: This permanently removes the task from the database.
+/// For recurring tasks, you'll be prompted about series deletion.
+/// Use --force to skip confirmation prompts (useful for scripts).
+/// 
+/// Examples:
+///   rusk delete abc123        # With confirmation
+///   rusk rm def456 --force    # Skip confirmation
 #[derive(Parser, Debug, Clone)]
 pub struct DeleteCommand {
-    /// The ID of the task to delete
+    /// Task ID to delete permanently (partial IDs accepted)
     pub id: String,
-    /// Force deletion without confirmation
-    #[clap(short, long)]
+    /// Skip confirmation prompt (useful for automation)
+    #[clap(short, long, help = "Delete without confirmation prompt")]
     pub force: bool,
 }
 
+/// List and filter tasks with powerful query syntax
+/// 
+/// Supports advanced filtering with logical operators:
+///   - Basic: status:pending project:Work tag:urgent
+///   - Logical: status:pending and (project:Work or tag:urgent)
+///   - Dates: due:today due:before:friday overdue
+///   - Negation: not status:completed
+///   - Series: has:recurrence no:recurrence
+/// 
+/// Examples:
+///   rusk list                           # Default view (pending tasks)
+///   rusk list due:today                 # Tasks due today
+///   rusk list project:Work and tag:urgent
+///   rusk list "due:before:friday and not status:completed"
+///   rusk ls overdue                     # Using alias
 #[derive(Parser, Debug, Clone)]
 pub struct ListCommand {
-    /// A filter query string (e.g., "status:pending and (project:Work or tag:urgent)")
-    #[clap(default_value = "")]
+    /// Filter query using logical operators and field filters
+    /// 
+    /// Available fields: status, project, tag, due, priority, has, no
+    /// Operators: and, or, not, parentheses for grouping
+    /// Date filters: today, tomorrow, overdue, before:DATE, after:DATE
+    #[clap(default_value = "", help = "Filter expression (empty shows default view)")]
     pub query: String,
 }
 
@@ -202,19 +319,22 @@ pub struct DeleteProjectCommand {
 }
 
 /// Human-friendly recurrence patterns
+/// 
+/// These shortcuts make it easy to create common recurring patterns
+/// without writing complex RRULE strings.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecurrenceShortcut {
-    /// Every day
+    /// Every day at the same time
     Daily,
-    /// Every week (same day)
+    /// Every week on the same day of the week
     Weekly,
-    /// Every month (same date)
+    /// Every month on the same date (handles month-end intelligently)
     Monthly,
-    /// Every year (same date)
+    /// Every year on the same date
     Yearly,
-    /// Monday to Friday
+    /// Monday through Friday (work days)
     Weekdays,
-    /// Saturday and Sunday
+    /// Saturday and Sunday (weekend days)
     Weekends,
 }
 
@@ -254,31 +374,41 @@ pub struct RecurrenceCommand {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum RecurrenceSubcommand {
-    /// Show series information and upcoming occurrences
+    /// Show comprehensive information about a recurring series
+    #[command(visible_alias = "i")]
     Info(RecurrenceInfoCommand),
-    /// Show next N occurrences for series
+    /// Preview upcoming occurrences for planning
+    #[command(visible_alias = "p")]
     Preview(RecurrencePreviewCommand),
-    /// Skip specific occurrence
+    /// Skip a specific occurrence without affecting the series
+    #[command(visible_alias = "s")]
     Skip(RecurrenceSkipCommand),
-    /// Move occurrence to different time
+    /// Move an occurrence to a different date/time
+    #[command(visible_alias = "m")]
     Move(RecurrenceMoveCommand),
-    /// Pause series (stop generating new instances)
+    /// Pause series to stop generating new instances
     Pause(RecurrencePauseCommand),
-    /// Resume paused series
+    /// Resume a paused series
     Resume(RecurrenceResumeCommand),
-    /// List all exceptions for series
+    /// List all exceptions (skips, moves, overrides) for a series
+    #[command(visible_alias = "ex")]
     Exceptions(RecurrenceExceptionsCommand),
-    /// Duplicate an existing series with a new name
+    /// Create a copy of an existing series with modifications
+    #[command(visible_alias = "dup")]
     Duplicate(RecurrenceDuplicateCommand),
-    /// Archive a completed series
+    /// Archive a completed series (mark as inactive)
+    #[command(visible_alias = "arch")]
     Archive(RecurrenceArchiveCommand),
-    /// Get detailed statistics for a series
+    /// Show detailed statistics and health metrics for a series
     Stats(RecurrenceStatsCommand),
-    /// Bulk skip multiple occurrences
+    /// Skip multiple occurrences in a date range or list
+    #[command(name = "bulk-skip")]
     BulkSkip(RecurrenceBulkSkipCommand),
-    /// Remove exceptions from a series
+    /// Remove specific exceptions to restore original schedule
+    #[command(name = "remove-exceptions")]
     RemoveExceptions(RecurrenceRemoveExceptionsCommand),
-    /// List available timezones
+    /// Browse and search available timezones
+    #[command(visible_alias = "tz")]
     Timezones(RecurrenceTimezonesCommand),
 }
 

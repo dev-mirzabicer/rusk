@@ -22,8 +22,27 @@ owo-colors = "4.0"
 indicatif = "0.17"
 figment = { version = "0.10", features = ["toml", "env"] }
 
+# Testing and development
+tokio-test = "0.4"
+rstest = "0.18"
+proptest = "1.4"
+criterion = "0.5"
+tempfile = "3.8"
+fastrand = "2.0"
+
 [profile.release]
 lto = true
 strip = true
 codegen-units = 1
 panic = "abort"
+
+# Test profiles for coverage and benchmarking
+[profile.test]
+debug = true
+
+[profile.bench]
+debug = true
+
+# Coverage configuration
+# Use: cargo llvm-cov --html --open
+# Install: cargo install cargo-llvm-cov

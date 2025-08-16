@@ -56,10 +56,82 @@ pub async fn add_task(repo: &impl Repository, command: AddCommand) -> Result<()>
     let is_recurring = new_task_data.rrule.is_some();
     let added_task = repo.add_task(new_task_data).await?;
     
+    // Enhanced success feedback with colors and helpful information
+    use owo_colors::{OwoColorize, Style};
+    let success_style = Style::new().green().bold();
+    let info_style = Style::new().blue();
+    let subtle_style = Style::new().bright_black();
+    
     if is_recurring {
-        println!("Added recurring task with ID: {} (series created)", added_task.id);
+        println!(
+            "{} Created recurring task: {}", 
+            "✓".style(success_style), 
+            added_task.name.bright_white().bold()
+        );
+        println!(
+            "  {} Task ID: {}", 
+            "→".style(info_style), 
+            added_task.id.to_string().yellow()
+        );
+        println!(
+            "  {} Recurring series automatically created and activated", 
+            "→".style(info_style)
+        );
+        
+        // Show next steps for recurring tasks
+        println!(
+            "\n{} Next steps:", 
+            "💡".style(subtle_style)
+        );
+        println!(
+            "   {} Preview upcoming: rusk recur preview {}", 
+            "•".style(subtle_style), 
+            added_task.id.to_string().yellow()
+        );
+        println!(
+            "   {} View series info: rusk recur info {}", 
+            "•".style(subtle_style), 
+            added_task.id.to_string().yellow()
+        );
+        println!(
+            "   {} List all recurring: rusk list has:recurrence", 
+            "•".style(subtle_style)
+        );
     } else {
-        println!("Added task with ID: {}", added_task.id);
+        println!(
+            "{} Created task: {}", 
+            "✓".style(success_style), 
+            added_task.name.bright_white().bold()
+        );
+        println!(
+            "  {} Task ID: {}", 
+            "→".style(info_style), 
+            added_task.id.to_string().yellow()
+        );
+        
+        // Show helpful next steps for regular tasks
+        if added_task.due_at.is_some() {
+            println!(
+                "  {} Due: {}", 
+                "→".style(info_style), 
+                added_task.due_at.unwrap().format("%Y-%m-%d %H:%M").to_string().cyan()
+            );
+        }
+        
+        println!(
+            "\n{} Quick actions:", 
+            "💡".style(subtle_style)
+        );
+        println!(
+            "   {} Mark complete: rusk do {}", 
+            "•".style(subtle_style), 
+            added_task.id.to_string().yellow()
+        );
+        println!(
+            "   {} Edit task: rusk edit {}", 
+            "•".style(subtle_style), 
+            added_task.id.to_string().yellow()
+        );
     }
 
     Ok(())
@@ -100,49 +172,109 @@ fn generate_rrule_from_shortcut(
     Ok(rrule)
 }
 
-/// Parse time string like "9:00 AM", "14:30", "9pm"
+/// Parse time string like "9:00 AM", "14:30", "9pm", "noon", "midnight"
 fn parse_time_string(time_str: &str) -> Result<chrono::NaiveTime> {
     use chrono::NaiveTime;
     
-    // Try various time formats
+    let input = time_str.trim().to_lowercase();
+    
+    // Handle special times first
+    match input.as_str() {
+        "noon" | "12pm" | "12:00pm" => return Ok(NaiveTime::from_hms_opt(12, 0, 0).unwrap()),
+        "midnight" | "12am" | "12:00am" => return Ok(NaiveTime::from_hms_opt(0, 0, 0).unwrap()),
+        _ => {}
+    }
+    
+    // Try various time formats with improved parsing
     let formats = [
+        "%H:%M:%S",        // 14:30:00
         "%H:%M",           // 14:30
+        "%I:%M:%S %p",     // 9:00:00 AM
         "%I:%M %p",        // 9:00 AM
-        "%I%p",            // 9AM
-        "%I %p",           // 9 AM
-        "%H",              // 14
+        "%I%p",            // 9AM, 9PM
+        "%I %p",           // 9 AM, 9 PM
+        "%H",              // 14 (hour only)
     ];
     
+    // Try original input first
     for format in &formats {
         if let Ok(time) = NaiveTime::parse_from_str(time_str, format) {
             return Ok(time);
         }
     }
     
-    Err(anyhow::anyhow!("Invalid time format: '{}'. Use formats like '9:00 AM', '14:30', '9pm'", time_str))
+    // Try with normalized input (lowercase)
+    for format in &formats {
+        if let Ok(time) = NaiveTime::parse_from_str(&input, format) {
+            return Ok(time);
+        }
+    }
+    
+    // Enhanced error message with examples
+    Err(anyhow::anyhow!(
+        "Invalid time format: '{}'\n\nSupported formats:\n  • 24-hour: '14:30', '09:00'\n  • 12-hour: '2:30 PM', '9:00 AM'\n  • Compact: '2pm', '9am'\n  • Special: 'noon', 'midnight'", 
+        time_str
+    ))
 }
 
-/// Parse days string like "mon,tue,wed" or "monday,tuesday"
+/// Parse days string like "mon,tue,wed", "monday,tuesday", or "weekdays"
 fn parse_days_string(days_str: &str) -> Result<Vec<String>> {
-    let mut rrule_days = Vec::new();
+    let input = days_str.trim().to_lowercase();
     
-    for day in days_str.split(',') {
-        let day = day.trim().to_lowercase();
-        let rrule_day = match day.as_str() {
-            "mon" | "monday" => "MO",
-            "tue" | "tuesday" => "TU", 
-            "wed" | "wednesday" => "WE",
-            "thu" | "thursday" => "TH",
-            "fri" | "friday" => "FR",
-            "sat" | "saturday" => "SA",
-            "sun" | "sunday" => "SU",
-            _ => return Err(anyhow::anyhow!("Invalid day: '{}'. Use mon,tue,wed,thu,fri,sat,sun", day)),
+    // Handle special day groups
+    match input.as_str() {
+        "weekdays" | "workdays" => {
+            return Ok(vec!["MO".to_string(), "TU".to_string(), "WE".to_string(), "TH".to_string(), "FR".to_string()]);
+        },
+        "weekends" => {
+            return Ok(vec!["SA".to_string(), "SU".to_string()]);
+        },
+        "daily" | "everyday" => {
+            return Ok(vec!["MO".to_string(), "TU".to_string(), "WE".to_string(), "TH".to_string(), "FR".to_string(), "SA".to_string(), "SU".to_string()]);
+        },
+        _ => {}
+    }
+    
+    let mut rrule_days = Vec::new();
+    let mut invalid_days = Vec::new();
+    
+    for day in input.split(',') {
+        let day = day.trim();
+        if day.is_empty() {
+            continue;
+        }
+        
+        let rrule_day = match day {
+            "mon" | "monday" | "m" => "MO",
+            "tue" | "tuesday" | "tu" => "TU", 
+            "wed" | "wednesday" | "w" => "WE",
+            "thu" | "thursday" | "th" => "TH",
+            "fri" | "friday" | "f" => "FR",
+            "sat" | "saturday" | "sa" => "SA",
+            "sun" | "sunday" | "su" => "SU",
+            _ => {
+                invalid_days.push(day.to_string());
+                continue;
+            }
         };
-        rrule_days.push(rrule_day.to_string());
+        
+        if !rrule_days.contains(&rrule_day.to_string()) {
+            rrule_days.push(rrule_day.to_string());
+        }
+    }
+    
+    if !invalid_days.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Invalid day(s): {}\n\nSupported formats:\n  • Full names: 'monday,tuesday,wednesday'\n  • Short names: 'mon,tue,wed'\n  • Single letters: 'm,tu,w,th,f,sa,su'\n  • Groups: 'weekdays', 'weekends', 'daily'", 
+            invalid_days.join(", ")
+        ));
     }
     
     if rrule_days.is_empty() {
-        return Err(anyhow::anyhow!("No valid days specified"));
+        return Err(anyhow::anyhow!(
+            "No valid days specified in: '{}'\n\nExamples:\n  • mon,wed,fri\n  • weekdays\n  • monday,wednesday,friday", 
+            days_str
+        ));
     }
     
     Ok(rrule_days)

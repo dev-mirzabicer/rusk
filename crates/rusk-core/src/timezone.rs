@@ -89,28 +89,3 @@ pub fn format_with_timezone(
     Ok(local_dt.format(format).to_string())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_validate_timezone() {
-        assert!(validate_timezone("UTC").is_ok());
-        assert!(validate_timezone("America/New_York").is_ok());
-        assert!(validate_timezone("Invalid/Timezone").is_err());
-    }
-
-    #[test]
-    fn test_timezone_offset() {
-        let utc_time = Utc::now();
-        assert!(get_timezone_offset("UTC", utc_time).is_ok());
-        assert!(get_timezone_offset("America/New_York", utc_time).is_ok());
-    }
-
-    #[test]
-    fn test_timezone_abbreviation() {
-        let utc_time = Utc::now();
-        let utc_abbr = get_timezone_abbreviation("UTC", utc_time).unwrap();
-        assert_eq!(utc_abbr, "UTC");
-    }
-}

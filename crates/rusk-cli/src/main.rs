@@ -30,8 +30,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    use rusk_core::models::MaterializationConfig;
-    use rusk_core::recurrence::MaterializationManager;
+    use rusk_core::recurrence::{MaterializationConfig, MaterializationManager};
     
     let materialization_manager = MaterializationManager::new(MaterializationConfig::default());
     let repository = SqliteRepository::new(db_pool, materialization_manager);
@@ -101,65 +100,105 @@ async fn main() {
 
 fn handle_error(err: anyhow::Error) {
     let error_style = Style::new().red().bold();
+    let tip_style = Style::new().cyan();
+    let example_style = Style::new().green();
+    let suggestion_style = Style::new().blue();
     let cause = err.source();
 
     if let Some(core_error) = cause.and_then(|e| e.downcast_ref::<CoreError>()) {
         match core_error {
             CoreError::NotFound(s) => {
                 eprintln!("{} {}", "Error:".style(error_style), s);
+                eprintln!("{} Use partial IDs (e.g., 'abc' instead of full UUID)", "Tip:".style(tip_style));
+                eprintln!("{} Run 'rusk list' to see all available tasks", "Tip:".style(tip_style));
             }
             CoreError::TaskBlocked(s) => {
                 eprintln!(
-                    "{} Task is blocked by: {}",
+                    "{} Task is blocked by dependency: {}",
                     "Error:".style(error_style),
                     s.yellow()
                 );
+                eprintln!("{} Complete the blocking task first, or remove the dependency", "Tip:".style(tip_style));
+                eprintln!("{} Remove dependency: rusk edit <task-id> --depends-on-clear", "Example:".style(example_style));
             }
             CoreError::AmbiguousId(tasks) => {
-                eprintln!("{}", "Error: Ambiguous ID.".style(error_style));
-                eprintln!("Did you mean one of these?");
+                eprintln!("{}", "Error: Multiple tasks match that ID prefix.".style(error_style));
+                eprintln!("\n{} Which task did you mean?", "Please specify:".style(suggestion_style));
                 for (id, name) in tasks {
-                    eprintln!("  {} ({})", id.yellow(), name);
+                    eprintln!("  {} {}", id.yellow().bold(), name.bright_white());
                 }
+                eprintln!("\n{} Use more characters from the ID to be specific", "Tip:".style(tip_style));
             }
             CoreError::InvalidInput(s) => {
                 eprintln!("{} Invalid input: {}", "Error:".style(error_style), s);
-                eprintln!("{} Check your command syntax with --help", "Tip:".cyan());
+                eprintln!("{} Check your command syntax and arguments", "Tip:".style(tip_style));
+                eprintln!("{} Use --help with any command for detailed usage information", "Tip:".style(tip_style));
+                eprintln!("{} rusk add --help", "Example:".style(example_style));
             }
             CoreError::InvalidTimezone(s) => {
-                eprintln!("{} {}", "Error:".style(error_style), s);
-                eprintln!("{} Use standard IANA timezone names like 'America/New_York'", "Tip:".cyan());
-                eprintln!("{} Run 'rusk recur timezones' to see common timezones", "Tip:".cyan());
+                eprintln!("{} Invalid timezone: {}", "Error:".style(error_style), s);
+                eprintln!("{} Use standard IANA timezone names (not abbreviations)", "Tip:".style(tip_style));
+                eprintln!("{} Browse available timezones: rusk recur timezones --search <region>", "Tip:".style(tip_style));
+                eprintln!("{} rusk recur timezones --search america --common", "Example:".style(example_style));
             }
             CoreError::InvalidRRule(s) => {
                 eprintln!("{} Invalid recurrence rule: {}", "Error:".style(error_style), s);
-                eprintln!("{} Use shortcuts like --every daily or valid RRULE syntax", "Tip:".cyan());
-                eprintln!("{} Example: --every weekdays --at '9:00 AM'", "Example:".green());
+                eprintln!("{} Use human-friendly shortcuts instead of raw RRULE", "Tip:".style(tip_style));
+                eprintln!("{} rusk add \"Daily task\" --every weekdays --at '9:00 AM'", "Example:".style(example_style));
+                eprintln!("{} For complex patterns, validate RRULE syntax first", "Tip:".style(tip_style));
             }
             CoreError::SeriesNotFound(s) => {
-                eprintln!("{} Series not found: {}", "Error:".style(error_style), s);
-                eprintln!("{} This task may not be part of a recurring series", "Tip:".cyan());
-                eprintln!("{} Use 'rusk list' to see all tasks and their series status", "Tip:".cyan());
+                eprintln!("{} Recurring series not found: {}", "Error:".style(error_style), s);
+                eprintln!("{} This task may not be part of a recurring series", "Tip:".style(tip_style));
+                eprintln!("{} View recurring tasks: rusk list has:recurrence", "Tip:".style(tip_style));
+                eprintln!("{} Get task details: rusk recur info <task-id>", "Example:".style(example_style));
             }
             CoreError::MaterializationError(s) => {
                 eprintln!("{} Materialization error: {}", "Error:".style(error_style), s);
-                eprintln!("{} This may be due to invalid recurrence configuration", "Tip:".cyan());
+                eprintln!("{} This indicates an issue with recurring task generation", "Tip:".style(tip_style));
+                eprintln!("{} Check the recurrence rule and timezone settings", "Tip:".style(tip_style));
+                eprintln!("{} rusk recur info <series-id> to inspect configuration", "Example:".style(example_style));
             }
             CoreError::InvalidException(s) => {
-                eprintln!("{} Invalid exception: {}", "Error:".style(error_style), s);
-                eprintln!("{} Check that the occurrence date exists in the series", "Tip:".cyan());
+                eprintln!("{} Invalid series exception: {}", "Error:".style(error_style), s);
+                eprintln!("{} Ensure the occurrence date exists in the series schedule", "Tip:".style(tip_style));
+                eprintln!("{} Preview upcoming occurrences: rusk recur preview <series-id>", "Tip:".style(tip_style));
+                eprintln!("{} Use natural language dates: 'next friday', 'tomorrow'", "Example:".style(example_style));
             }
             CoreError::CircularDependency(task, depends_on) => {
                 eprintln!(
-                    "{} Circular dependency detected: Task '{}' cannot depend on '{}'",
-                    "Error:".style(error_style),
-                    task.yellow(),
-                    depends_on.yellow()
+                    "{} Circular dependency detected:",
+                    "Error:".style(error_style)
                 );
+                eprintln!("  Task '{}' cannot depend on '{}'", task.yellow(), depends_on.yellow());
+                eprintln!("{} Dependencies must form a directed acyclic graph (no cycles)", "Tip:".style(tip_style));
+                eprintln!("{} Remove dependency: rusk edit {} --depends-on-clear", "Fix:".style(suggestion_style), task);
             }
-            _ => eprintln!("{} {}", "Error:".style(error_style), err),
+            CoreError::Database(e) => {
+                eprintln!("{} Database error: {}", "Error:".style(error_style), e);
+                eprintln!("{} This may indicate database corruption or permission issues", "Tip:".style(tip_style));
+                eprintln!("{} Check file permissions on rusk.db", "Tip:".style(tip_style));
+                eprintln!("{} Consider backing up and reinitializing if problems persist", "Tip:".style(tip_style));
+            }
+            _ => {
+                eprintln!("{} {}", "Error:".style(error_style), err);
+                eprintln!("{} If this error persists, please report it as a bug", "Tip:".style(tip_style));
+            }
         }
     } else {
-        eprintln!("{} {}", "Error:".style(error_style), err);
+        // Handle non-Core errors with helpful context
+        let error_message = err.to_string();
+        eprintln!("{} {}", "Error:".style(error_style), error_message);
+        
+        // Provide contextual help based on error message patterns
+        if error_message.contains("permission") || error_message.contains("access") {
+            eprintln!("{} Check file permissions on the database file", "Tip:".style(tip_style));
+        } else if error_message.contains("network") || error_message.contains("connection") {
+            eprintln!("{} Check your network connection", "Tip:".style(tip_style));
+        } else if error_message.contains("parse") || error_message.contains("format") {
+            eprintln!("{} Check the format of your input parameters", "Tip:".style(tip_style));
+        } else {
+            eprintln!("{} Use --help for command usage information", "Tip:".style(tip_style));
+        }
     }
 }
