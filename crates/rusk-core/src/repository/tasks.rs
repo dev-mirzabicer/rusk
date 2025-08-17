@@ -5,10 +5,10 @@ use crate::models::{
 };
 use crate::query::Query;
 use crate::recurrence::RecurrenceManager;
-use crate::repository::{TaskQueryResult, SqliteRepository, MaterializationRepository, SeriesRepository};
+use crate::repository::{TaskQueryResult, SqliteRepository, SeriesRepository};
 use crate::repository::query_builder::SqlQueryBuilder;
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sqlx::{QueryBuilder, Sqlite, Transaction};
 use uuid::Uuid;
 
@@ -73,13 +73,8 @@ impl super::TaskRepository for SqliteRepository {
     }
 
     async fn find_tasks_with_details(&self, query: &Query) -> Result<Vec<TaskQueryResult>, CoreError> {
-        // PHASE 3: Add materialization hooks to ensure current data
-        // Calculate window based on filters and trigger materialization if needed
-        let filters = SqlQueryBuilder::extract_filters_from_query(query);
-        let (window_start, window_end) = self.materialization_manager().calculate_window_for_filters(&filters);
-        
-        // Trigger materialization for all active series within the window
-        self.refresh_series_materialization(window_start, window_end).await?;
+        // ALWAYS ensure materialization before any query to prevent missing recurring tasks
+        self.ensure_materialization_for_query(query).await?;
 
         let mut query_builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(
             r#"WITH RECURSIVE task_hierarchy (id, name, description, status, priority, due_at, completed_at, created_at, updated_at, project_id, parent_id, series_id, depth, path) AS (
@@ -285,108 +280,30 @@ impl super::TaskRepository for SqliteRepository {
     async fn update_task(&self, id: Uuid, data: UpdateTaskData, scope: Option<crate::models::EditScope>) -> Result<Task, CoreError> {
         let mut tx = self.pool().begin().await?;
 
-        // Get the current task to determine if it's part of a series
         let current_task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id = $1")
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?
             .ok_or_else(|| CoreError::NotFound(id.to_string()))?;
 
-        // Determine the edit scope and handle series-aware updates
-        if let Some(series_id) = current_task.series_id {
-            // This is a series instance, handle scope-aware editing
-            let edit_scope = scope.unwrap_or(crate::models::EditScope::ThisOccurrence);
-            
-            match edit_scope {
-                crate::models::EditScope::ThisOccurrence => {
-                    // Create an exception for this specific occurrence
-                    if data.rrule.is_some() || data.timezone.is_some() {
-                        return Err(CoreError::InvalidInput(
-                            "Cannot modify recurrence for single occurrence. Use EditScope::ThisAndFuture or EditScope::EntireSeries".to_string()
-                        ));
-                    }
-                    
-                    // Update this task instance only
-                    Self::update_task_fields(&mut tx, id, &data).await?;
-                }
-                crate::models::EditScope::ThisAndFuture | crate::models::EditScope::EntireSeries => {
-                    // Update the series and re-materialize affected instances
-                    let series: TaskSeries = sqlx::query_as("SELECT * FROM task_series WHERE id = $1")
-                        .bind(series_id)
-                        .fetch_optional(&mut *tx)
-                        .await?
-                        .ok_or_else(|| CoreError::NotFound(format!("Series with id {} not found", series_id)))?;
-
-                    // Build UpdateSeriesData from UpdateTaskData
-                    let mut series_update = crate::models::UpdateSeriesData::default();
-                    
-                    if let Some(rrule) = data.rrule.as_ref() {
-                        series_update.rrule = rrule.clone();
-                    }
-                    
-                    if let Some(timezone) = data.timezone.as_ref() {
-                        series_update.timezone = timezone.clone();
-                    }
-
-                    // Update the series if needed
-                    if series_update.rrule.is_some() || series_update.timezone.is_some() {
-                        self.update_series(series_id, series_update).await?;
-                    }
-
-                    // Update the template task with non-recurrence fields
-                    let mut template_update = data.clone();
-                    template_update.rrule = None; // Don't update rrule on template
-                    template_update.timezone = None; // Don't update timezone on template
-                    
-                    Self::update_task_fields(&mut tx, series.template_task_id, &template_update).await?;
-
-                    // Re-materialize instances based on scope
-                    match edit_scope {
-                        crate::models::EditScope::ThisAndFuture => {
-                            // Delete future instances and re-materialize
-                            if let Some(due_at) = current_task.due_at {
-                                sqlx::query("DELETE FROM tasks WHERE series_id = $1 AND due_at >= $2 AND id != $3")
-                                    .bind(series_id)
-                                    .bind(due_at)
-                                    .bind(series.template_task_id) // Don't delete template
-                                    .execute(&mut *tx)
-                                    .await?;
-                                
-                                // Reset materialization boundary to trigger re-materialization
-                                sqlx::query("UPDATE task_series SET last_materialized_until = $1 WHERE id = $2")
-                                    .bind(due_at - chrono::Duration::days(1))
-                                    .bind(series_id)
-                                    .execute(&mut *tx)
-                                    .await?;
-                            }
-                        }
-                        crate::models::EditScope::EntireSeries => {
-                            // Delete all instances and re-materialize
-                            sqlx::query("DELETE FROM tasks WHERE series_id = $1 AND id != $2")
-                                .bind(series_id)
-                                .bind(series.template_task_id) // Don't delete template
-                                .execute(&mut *tx)
-                                .await?;
-                            
-                            // Reset materialization boundary to trigger full re-materialization
-                            sqlx::query("UPDATE task_series SET last_materialized_until = NULL WHERE id = $1")
-                                .bind(series_id)
-                                .execute(&mut *tx)
-                                .await?;
-                        }
-                        _ => unreachable!()
-                    }
-                }
+        // Dispatch based on series membership and edit scope
+        match (current_task.series_id, scope.unwrap_or(crate::models::EditScope::ThisOccurrence)) {
+            (None, _) => {
+                // Regular task - validate no recurrence changes
+                self.update_regular_task(&mut tx, id, &data).await?;
             }
-        } else {
-            // Regular task or template task, standard update
-            if data.rrule.is_some() || data.timezone.is_some() {
-                return Err(CoreError::InvalidInput(
-                    "Cannot add recurrence to existing task. Create a new recurring task instead".to_string()
-                ));
+            (Some(_), crate::models::EditScope::ThisOccurrence) => {
+                // Single occurrence edit
+                self.update_single_occurrence(&mut tx, id, &data).await?;
             }
-            
-            Self::update_task_fields(&mut tx, id, &data).await?;
+            (Some(_series_id), crate::models::EditScope::ThisAndFuture) => {
+                // Update from this occurrence forward
+                self.update_series_from_future(&mut tx, &current_task, &data).await?;
+            }
+            (Some(series_id), crate::models::EditScope::EntireSeries) => {
+                // Update entire series
+                self.update_entire_series(&mut tx, series_id, &data).await?;
+            }
         }
 
         let updated_task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id = $1")
@@ -396,6 +313,193 @@ impl super::TaskRepository for SqliteRepository {
 
         tx.commit().await?;
         Ok(updated_task)
+    }
+}
+
+impl SqliteRepository {
+    /// Updates a regular (non-series) task with validation
+    async fn update_regular_task<'a>(
+        &self,
+        tx: &mut Transaction<'a, Sqlite>,
+        task_id: Uuid,
+        data: &UpdateTaskData,
+    ) -> Result<(), CoreError> {
+        if data.rrule.is_some() || data.timezone.is_some() {
+            return Err(CoreError::InvalidInput(
+                "Cannot add recurrence to existing task. Create a new recurring task instead".to_string()
+            ));
+        }
+        
+        Self::update_task_fields(tx, task_id, data).await
+    }
+
+    /// Updates a single task occurrence with validation
+    async fn update_single_occurrence<'a>(
+        &self,
+        tx: &mut Transaction<'a, Sqlite>,
+        task_id: Uuid,
+        data: &UpdateTaskData,
+    ) -> Result<(), CoreError> {
+        if data.rrule.is_some() || data.timezone.is_some() {
+            return Err(CoreError::InvalidInput(
+                "Cannot modify recurrence for single occurrence. Use EditScope::ThisAndFuture or EditScope::EntireSeries".to_string()
+            ));
+        }
+        
+        Self::update_task_fields(tx, task_id, data).await
+    }
+
+    /// Updates series and re-materializes instances from a specific point forward
+    async fn update_series_from_future<'a>(
+        &self,
+        tx: &mut Transaction<'a, Sqlite>,
+        current_task: &Task,
+        data: &UpdateTaskData,
+    ) -> Result<(), CoreError> {
+        let series_id = current_task.series_id.unwrap();
+        
+        // Update series metadata
+        self.update_series_metadata(tx, series_id, data).await?;
+        
+        // Update template task
+        self.update_template_task(tx, series_id, data).await?;
+        
+        // Clean future instances and reset materialization boundary
+        if let Some(due_at) = current_task.due_at {
+            self.clean_future_instances(tx, series_id, due_at).await?;
+            self.reset_materialization_boundary(tx, series_id, Some(due_at)).await?;
+        }
+        
+        Ok(())
+    }
+
+    /// Updates entire series and re-materializes all instances
+    async fn update_entire_series<'a>(
+        &self,
+        tx: &mut Transaction<'a, Sqlite>,
+        series_id: Uuid,
+        data: &UpdateTaskData,
+    ) -> Result<(), CoreError> {
+        // Update series metadata
+        self.update_series_metadata(tx, series_id, data).await?;
+        
+        // Update template task
+        self.update_template_task(tx, series_id, data).await?;
+        
+        // Clean all instances and reset materialization
+        self.clean_all_instances(tx, series_id).await?;
+        self.reset_materialization_boundary(tx, series_id, None).await?;
+        
+        Ok(())
+    }
+
+    /// Updates series recurrence metadata (rrule, timezone)
+    async fn update_series_metadata<'a>(
+        &self,
+        _tx: &mut Transaction<'a, Sqlite>,
+        series_id: Uuid,
+        data: &UpdateTaskData,
+    ) -> Result<(), CoreError> {
+        if data.rrule.is_some() || data.timezone.is_some() {
+            let mut series_update = crate::models::UpdateSeriesData::default();
+            if let Some(rrule) = &data.rrule {
+                series_update.rrule = rrule.clone();
+            }
+            if let Some(timezone) = &data.timezone {
+                series_update.timezone = timezone.clone();
+            }
+            self.update_series(series_id, series_update).await?;
+        }
+        Ok(())
+    }
+
+    /// Updates template task with non-recurrence fields
+    async fn update_template_task<'a>(
+        &self,
+        tx: &mut Transaction<'a, Sqlite>,
+        series_id: Uuid,
+        data: &UpdateTaskData,
+    ) -> Result<(), CoreError> {
+        let series: crate::models::TaskSeries = sqlx::query_as("SELECT * FROM task_series WHERE id = $1")
+            .bind(series_id)
+            .fetch_one(&mut **tx)
+            .await?;
+
+        let mut template_update = data.clone();
+        template_update.rrule = None;    // Don't update rrule on template
+        template_update.timezone = None; // Don't update timezone on template
+        
+        Self::update_task_fields(tx, series.template_task_id, &template_update).await
+    }
+
+    /// Cleans future instances from a specific date forward
+    async fn clean_future_instances<'a>(
+        &self,
+        tx: &mut Transaction<'a, Sqlite>,
+        series_id: Uuid,
+        from_date: DateTime<Utc>,
+    ) -> Result<(), CoreError> {
+        let series: crate::models::TaskSeries = sqlx::query_as("SELECT * FROM task_series WHERE id = $1")
+            .bind(series_id)
+            .fetch_one(&mut **tx)
+            .await?;
+
+        sqlx::query("DELETE FROM tasks WHERE series_id = $1 AND due_at >= $2 AND id != $3")
+            .bind(series_id)
+            .bind(from_date)
+            .bind(series.template_task_id) // Don't delete template
+            .execute(&mut **tx)
+            .await?;
+        
+        Ok(())
+    }
+
+    /// Cleans all instances (except template) for a series
+    async fn clean_all_instances<'a>(
+        &self,
+        tx: &mut Transaction<'a, Sqlite>,
+        series_id: Uuid,
+    ) -> Result<(), CoreError> {
+        let series: crate::models::TaskSeries = sqlx::query_as("SELECT * FROM task_series WHERE id = $1")
+            .bind(series_id)
+            .fetch_one(&mut **tx)
+            .await?;
+
+        sqlx::query("DELETE FROM tasks WHERE series_id = $1 AND id != $2")
+            .bind(series_id)
+            .bind(series.template_task_id) // Don't delete template
+            .execute(&mut **tx)
+            .await?;
+        
+        Ok(())
+    }
+
+    /// Resets materialization boundary to trigger re-materialization
+    async fn reset_materialization_boundary<'a>(
+        &self,
+        tx: &mut Transaction<'a, Sqlite>,
+        series_id: Uuid,
+        boundary_date: Option<DateTime<Utc>>,
+    ) -> Result<(), CoreError> {
+        match boundary_date {
+            Some(date) => {
+                // Reset to one day before the boundary to trigger re-materialization
+                sqlx::query("UPDATE task_series SET last_materialized_until = $1 WHERE id = $2")
+                    .bind(date - chrono::Duration::days(1))
+                    .bind(series_id)
+                    .execute(&mut **tx)
+                    .await?;
+            }
+            None => {
+                // Reset to NULL for full re-materialization
+                sqlx::query("UPDATE task_series SET last_materialized_until = NULL WHERE id = $1")
+                    .bind(series_id)
+                    .execute(&mut **tx)
+                    .await?;
+            }
+        }
+        
+        Ok(())
     }
 }
 

@@ -3,7 +3,7 @@ use dialoguer::Confirm;
 use owo_colors::{OwoColorize, Style};
 use rusk_core::db;
 use rusk_core::error::CoreError;
-use rusk_core::repository::{Repository, SqliteRepository};
+use rusk_core::repository::{Repository, SqliteRepository, TaskRepository};
 use util::resolve_task_id;
 
 mod cli;

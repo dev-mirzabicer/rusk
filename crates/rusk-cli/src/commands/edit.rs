@@ -2,7 +2,7 @@ use anyhow::Result;
 use dialoguer::Select;
 use owo_colors::OwoColorize;
 use rusk_core::models::{UpdateTaskData, EditScope};
-use rusk_core::repository::Repository;
+use rusk_core::repository::{Repository, TaskRepository};
 
 use crate::cli::EditCommand;
 use crate::parser::parse_due_date;

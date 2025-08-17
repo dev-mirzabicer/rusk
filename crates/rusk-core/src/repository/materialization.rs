@@ -1,7 +1,7 @@
 use crate::error::CoreError;
 use crate::models::{Task, TaskSeries, TaskStatus, SeriesException};
 use crate::recurrence::RecurrenceManager;
-use crate::repository::{SqliteRepository, SeriesRepository};
+use crate::repository::{SqliteRepository, SeriesRepository, MaterializationRepository};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{Sqlite, Transaction};
@@ -287,5 +287,27 @@ impl SqliteRepository {
         }
 
         Ok(())
+    }
+
+    /// Ensures materialization for any query with intelligent window calculation
+    pub(crate) async fn ensure_materialization_for_query(&self, query: &crate::query::Query) -> Result<(), CoreError> {
+        use crate::repository::query_builder::SqlQueryBuilder;
+        
+        let filters = SqlQueryBuilder::extract_filters_from_query(query);
+        
+        // Calculate window - always provide a default materialization window
+        let (window_start, window_end) = if filters.iter().any(|f| matches!(f, crate::models::Filter::DueDate(_))) {
+            // If date filters exist, use optimized window calculation
+            self.materialization_manager().calculate_window_for_filters(&filters)
+        } else {
+            // Default window for all non-date-filtered queries to ensure recurring tasks are visible
+            let now = Utc::now();
+            let grace_days = self.materialization_manager().config().materialization_grace_days as i64;
+            let lookahead_days = self.materialization_manager().config().lookahead_days as i64;
+            (now - chrono::Duration::days(grace_days), now + chrono::Duration::days(lookahead_days))
+        };
+        
+        // Trigger materialization for all active series within the window
+        MaterializationRepository::refresh_series_materialization(self, window_start, window_end).await
     }
 }

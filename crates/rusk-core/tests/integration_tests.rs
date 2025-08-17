@@ -1,7 +1,11 @@
 use rusk_core::db::establish_connection;
 use rusk_core::models::*;
 use rusk_core::recurrence::*;
-use rusk_core::repository::{Repository, SqliteRepository};
+use rusk_core::error::CoreError;
+use rusk_core::repository::{
+    Repository, SqliteRepository, TaskRepository, ProjectRepository, 
+    SeriesRepository, MaterializationRepository, ExceptionRepository
+};
 use chrono::{DateTime, Utc, Duration};
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -432,17 +436,17 @@ async fn test_error_handling_workflow() {
     };
     let result = repo.update_task(non_existent_id, update_data, Some(EditScope::ThisOccurrence)).await;
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), rusk_core::error::CoreError::NotFound));
+    assert!(matches!(result.unwrap_err(), rusk_core::error::CoreError::NotFound(_)));
     
     // Test deleting non-existent task
     let result = repo.delete_task(non_existent_id).await;
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), rusk_core::error::CoreError::NotFound));
+    assert!(matches!(result.unwrap_err(), rusk_core::error::CoreError::NotFound(_)));
     
     // Test completing non-existent task
     let result = repo.complete_task(non_existent_id).await;
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), rusk_core::error::CoreError::NotFound));
+    assert!(matches!(result.unwrap_err(), rusk_core::error::CoreError::NotFound(_)));
     
     // Test circular dependency detection
     let task1 = create_test_task(&repo, "Task 1", None).await;
@@ -460,7 +464,7 @@ async fn test_error_handling_workflow() {
     };
     let result = repo.update_task(task1.id, circular_update, Some(EditScope::ThisOccurrence)).await;
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), rusk_core::error::CoreError::CircularDependency));
+    assert!(matches!(result.unwrap_err(), rusk_core::error::CoreError::CircularDependency(_, _)));
 }
 
 #[tokio::test] 
@@ -557,4 +561,290 @@ async fn test_materialization_workflow() {
     assert_eq!(cloned_summary.series_processed, 5);
     assert_eq!(cloned_summary.instances_created, 15);
     assert_eq!(cloned_summary.errors.len(), 1);
+}
+
+/// Helper function to create a recurring task for EditScope testing
+async fn create_recurring_task(repo: &SqliteRepository, rrule: &str) -> (Task, TaskSeries) {
+    let task_data = NewTaskData {
+        name: "Recurring Task".to_string(),
+        description: Some("Test recurring task".to_string()),
+        priority: Some(TaskPriority::Medium),
+        due_at: Some(Utc::now() + Duration::hours(1)),
+        rrule: Some(rrule.to_string()),
+        timezone: Some("UTC".to_string()),
+        ..Default::default()
+    };
+    
+    let task = repo.add_task(task_data).await.unwrap();
+    let series = repo.find_series_by_template(task.id).await.unwrap().unwrap();
+    
+    (task, series)
+}
+
+#[tokio::test]
+async fn test_edit_scope_this_occurrence() {
+    let (repo, _temp_dir) = setup_test_db().await;
+    
+    // Create a daily recurring task
+    let (template_task, series) = create_recurring_task(&repo, "FREQ=DAILY;COUNT=5").await;
+    
+    // Materialize some instances
+    let now = Utc::now();
+    let window_end = now + Duration::days(7);
+    repo.refresh_series_materialization(now, window_end).await.unwrap();
+    
+    // Find a materialized instance
+    let tasks = repo.find_materialized_tasks_for_series(series.id, now, window_end).await.unwrap();
+    let instance_task = tasks.iter().find(|t| t.id != template_task.id).unwrap();
+    
+    // Update single occurrence with EditScope::ThisOccurrence
+    let update_data = UpdateTaskData {
+        name: Some("Modified Single Occurrence".to_string()),
+        priority: Some(TaskPriority::High),
+        description: Some(Some("Only this instance should be changed".to_string())),
+        ..Default::default()
+    };
+    
+    let updated_task = repo.update_task(instance_task.id, update_data, Some(EditScope::ThisOccurrence)).await.unwrap();
+    
+    // Verify only this instance changed
+    assert_eq!(updated_task.name, "Modified Single Occurrence");
+    assert_eq!(updated_task.priority, TaskPriority::High);
+    assert_eq!(updated_task.description, Some("Only this instance should be changed".to_string()));
+    
+    // Verify template task unchanged
+    let template_after = repo.find_task_by_id(template_task.id).await.unwrap().unwrap();
+    assert_eq!(template_after.name, template_task.name);
+    assert_eq!(template_after.priority, template_task.priority);
+    
+    // Verify other instances unchanged (by checking they still exist with original data)
+    let all_tasks = repo.find_materialized_tasks_for_series(series.id, now, window_end).await.unwrap();
+    let unchanged_instances: Vec<_> = all_tasks.iter()
+        .filter(|t| t.id != template_task.id && t.id != instance_task.id)
+        .collect();
+    
+    assert!(!unchanged_instances.is_empty());
+    for task in unchanged_instances {
+        assert_eq!(task.name, template_task.name);
+        assert_eq!(task.priority, template_task.priority);
+    }
+}
+
+#[tokio::test]
+async fn test_edit_scope_this_occurrence_rrule_rejection() {
+    let (repo, _temp_dir) = setup_test_db().await;
+    
+    // Create a daily recurring task and materialize instances
+    let (template_task, series) = create_recurring_task(&repo, "FREQ=DAILY;COUNT=5").await;
+    
+    let now = Utc::now();
+    let window_end = now + Duration::days(7);
+    repo.refresh_series_materialization(now, window_end).await.unwrap();
+    
+    let tasks = repo.find_materialized_tasks_for_series(series.id, now, window_end).await.unwrap();
+    let instance_task = tasks.iter().find(|t| t.id != template_task.id).unwrap();
+    
+    // Attempt to modify recurrence on single occurrence (should fail)
+    let invalid_update = UpdateTaskData {
+        name: Some("Modified".to_string()),
+        rrule: Some(Some("FREQ=WEEKLY".to_string())),
+        ..Default::default()
+    };
+    
+    let result = repo.update_task(instance_task.id, invalid_update, Some(EditScope::ThisOccurrence)).await;
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), CoreError::InvalidInput(_)));
+}
+
+#[tokio::test]
+async fn test_edit_scope_this_and_future() {
+    let (repo, _temp_dir) = setup_test_db().await;
+    
+    // Create a daily recurring task
+    let (template_task, series) = create_recurring_task(&repo, "FREQ=DAILY;COUNT=10").await;
+    
+    // Materialize instances
+    let now = Utc::now();
+    let window_end = now + Duration::days(12);
+    repo.refresh_series_materialization(now, window_end).await.unwrap();
+    
+    // Get initial task count
+    let initial_tasks = repo.find_materialized_tasks_for_series(series.id, now, window_end).await.unwrap();
+    let instance_task = initial_tasks.iter()
+        .filter(|t| t.id != template_task.id)
+        .nth(2) // Pick the 3rd instance
+        .unwrap();
+    
+    // Update from this occurrence forward
+    let update_data = UpdateTaskData {
+        name: Some("Modified From This Point".to_string()),
+        priority: Some(TaskPriority::High),
+        rrule: Some(Some("FREQ=WEEKLY".to_string())), // Change recurrence
+        ..Default::default()
+    };
+    
+    let updated_task = repo.update_task(instance_task.id, update_data, Some(EditScope::ThisAndFuture)).await.unwrap();
+    assert_eq!(updated_task.name, "Modified From This Point");
+    
+    // Verify template task was updated
+    let updated_template = repo.find_task_by_id(template_task.id).await.unwrap().unwrap();
+    assert_eq!(updated_template.name, "Modified From This Point");
+    assert_eq!(updated_template.priority, TaskPriority::High);
+    
+    // Verify series was updated
+    let updated_series = repo.find_series_by_id(series.id).await.unwrap().unwrap();
+    assert!(updated_series.rrule.contains("FREQ=WEEKLY"));
+    
+    // Verify future instances were deleted and will be re-materialized with new pattern
+    let tasks_after = repo.find_materialized_tasks_for_series(series.id, now, window_end).await.unwrap();
+    
+    // Should have fewer tasks now (some future ones deleted)
+    assert!(tasks_after.len() <= initial_tasks.len());
+    
+    // Past instances before the edit point should remain unchanged
+    let past_instances: Vec<_> = initial_tasks.iter()
+        .filter(|t| t.id != template_task.id && t.due_at.unwrap() < instance_task.due_at.unwrap())
+        .collect();
+    
+    for past_task in past_instances {
+        let found_task = tasks_after.iter().find(|t| t.id == past_task.id);
+        assert!(found_task.is_some());
+        assert_eq!(found_task.unwrap().name, template_task.name); // Original name
+    }
+}
+
+#[tokio::test]
+async fn test_edit_scope_entire_series() {
+    let (repo, _temp_dir) = setup_test_db().await;
+    
+    // Create a daily recurring task
+    let (template_task, series) = create_recurring_task(&repo, "FREQ=DAILY;COUNT=7").await;
+    
+    // Materialize instances
+    let now = Utc::now();
+    let window_end = now + Duration::days(10);
+    repo.refresh_series_materialization(now, window_end).await.unwrap();
+    
+    let initial_tasks = repo.find_materialized_tasks_for_series(series.id, now, window_end).await.unwrap();
+    let instance_task = initial_tasks.iter().find(|t| t.id != template_task.id).unwrap();
+    
+    // Update entire series
+    let update_data = UpdateTaskData {
+        name: Some("Completely New Series".to_string()),
+        priority: Some(TaskPriority::Low),
+        description: Some(Some("All instances should reflect this change".to_string())),
+        rrule: Some(Some("FREQ=WEEKLY;COUNT=3".to_string())), // Completely new pattern
+        ..Default::default()
+    };
+    
+    let updated_task = repo.update_task(instance_task.id, update_data, Some(EditScope::EntireSeries)).await.unwrap();
+    assert_eq!(updated_task.name, "Completely New Series");
+    
+    // Verify template task was updated
+    let updated_template = repo.find_task_by_id(template_task.id).await.unwrap().unwrap();
+    assert_eq!(updated_template.name, "Completely New Series");
+    assert_eq!(updated_template.priority, TaskPriority::Low);
+    assert_eq!(updated_template.description, Some("All instances should reflect this change".to_string()));
+    
+    // Verify series was updated
+    let updated_series = repo.find_series_by_id(series.id).await.unwrap().unwrap();
+    assert!(updated_series.rrule.contains("FREQ=WEEKLY"));
+    assert!(updated_series.rrule.contains("COUNT=3"));
+    
+    // Verify all old instances were deleted
+    let tasks_after = repo.find_materialized_tasks_for_series(series.id, now, window_end).await.unwrap();
+    
+    // Should only have the template task now (instances will be re-materialized later)
+    let non_template_tasks: Vec<_> = tasks_after.iter()
+        .filter(|t| t.id != template_task.id)
+        .collect();
+    
+    // All materialized instances should be gone or follow new pattern
+    for task in non_template_tasks {
+        // If any instances exist, they should have the new properties
+        assert_eq!(task.name, "Completely New Series");
+        assert_eq!(task.priority, TaskPriority::Low);
+    }
+}
+
+#[tokio::test]
+async fn test_regular_task_update_maintains_isolation() {
+    let (repo, _temp_dir) = setup_test_db().await;
+    
+    // Create a regular (non-recurring) task
+    let task_data = NewTaskData {
+        name: "Regular Task".to_string(),
+        description: Some("Non-recurring task".to_string()),
+        priority: Some(TaskPriority::Medium),
+        due_at: Some(Utc::now() + Duration::hours(2)),
+        ..Default::default()
+    };
+    
+    let task = repo.add_task(task_data).await.unwrap();
+    
+    // Update regular task
+    let update_data = UpdateTaskData {
+        name: Some("Updated Regular Task".to_string()),
+        priority: Some(TaskPriority::High),
+        description: Some(Some("Updated description".to_string())),
+        ..Default::default()
+    };
+    
+    let updated_task = repo.update_task(task.id, update_data, None).await.unwrap();
+    
+    // Verify update worked
+    assert_eq!(updated_task.name, "Updated Regular Task");
+    assert_eq!(updated_task.priority, TaskPriority::High);
+    assert_eq!(updated_task.description, Some("Updated description".to_string()));
+    assert!(updated_task.series_id.is_none());
+}
+
+#[tokio::test] 
+async fn test_regular_task_rrule_addition_rejection() {
+    let (repo, _temp_dir) = setup_test_db().await;
+    
+    // Create a regular task
+    let task = create_test_task(&repo, "Regular Task", None).await;
+    
+    // Attempt to add recurrence to existing regular task (should fail)
+    let invalid_update = UpdateTaskData {
+        name: Some("Updated".to_string()),
+        rrule: Some(Some("FREQ=DAILY".to_string())),
+        ..Default::default()
+    };
+    
+    let result = repo.update_task(task.id, invalid_update, None).await;
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), CoreError::InvalidInput(_)));
+}
+
+#[tokio::test]
+async fn test_materialization_triggers_for_non_date_queries() {
+    let (repo, _temp_dir) = setup_test_db().await;
+    
+    // Create a project and recurring task
+    let project = create_test_project(&repo, "Test Project").await;
+    let task_data = NewTaskData {
+        name: "Project Recurring Task".to_string(),
+        project_id: Some(project.id),
+        rrule: Some("FREQ=DAILY;COUNT=3".to_string()),
+        timezone: Some("UTC".to_string()),
+        due_at: Some(Utc::now() + Duration::hours(1)),
+        ..Default::default()
+    };
+    
+    let task = repo.add_task(task_data).await.unwrap();
+    
+    // Query by project (no date filter) - should trigger materialization
+    use rusk_core::query::{Query, Filter};
+    let project_query = Query::And(vec![Filter::Project(project.name.clone())]);
+    
+    let tasks = repo.find_tasks_with_details(&project_query).await.unwrap();
+    
+    // Should find the template task and any materialized instances
+    assert!(!tasks.is_empty());
+    
+    // Verify we found tasks related to our series
+    let found_our_task = tasks.iter().any(|t| t.id == task.id);
+    assert!(found_our_task);
 }

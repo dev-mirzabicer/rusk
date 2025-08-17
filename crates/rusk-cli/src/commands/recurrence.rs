@@ -5,7 +5,7 @@ use dialoguer::Confirm;
 use owo_colors::OwoColorize;
 use rusk_core::models::{NewSeriesException, ExceptionType, UpdateSeriesData};
 use rusk_core::recurrence::RecurrenceManager;
-use rusk_core::repository::Repository;
+use rusk_core::repository::{Repository, TaskRepository, SeriesRepository, ExceptionRepository};
 
 use crate::cli::{
     RecurrenceCommand, RecurrenceSubcommand, RecurrenceInfoCommand, RecurrencePreviewCommand,

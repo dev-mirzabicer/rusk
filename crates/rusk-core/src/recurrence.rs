@@ -212,7 +212,7 @@ impl RecurrenceManager {
         let mut occurrences = Vec::new();
 
         // Generate occurrences using RRuleSet with proper bounds  
-        // More efficient approach: avoid string conversions entirely by using direct timezone conversion
+        // Safe approach: use iterator directly to avoid memory limits
         let start_rrule = start.with_timezone(&RRuleTz::UTC);
         let end_rrule = end.with_timezone(&RRuleTz::UTC);
         
@@ -220,7 +220,9 @@ impl RecurrenceManager {
             .after(start_rrule)
             .before(end_rrule);
         
-        let (occurrences_vec, _) = bounded_rrule.all(1000); // Reasonable limit
+        // Use safe iteration with reasonable upper bound for materialization windows
+        let max_occurrences_for_window = self.calculate_max_safe_occurrences(start, end)?;
+        let (occurrences_vec, _) = bounded_rrule.all(max_occurrences_for_window);
         
         // Pre-allocate with estimated capacity for better performance
         occurrences.reserve(occurrences_vec.len());
@@ -279,10 +281,10 @@ impl RecurrenceManager {
         &self, 
         after: DateTime<Utc>
     ) -> Result<Option<DateTime<Utc>>, CoreError> {
-        // More efficient approach: avoid string conversion and clones
+        // Safe approach: limit search to reasonable number of candidates
         let after_rrule = after.with_timezone(&RRuleTz::UTC);
         let after_rrule_set = self.rrule_set.clone().after(after_rrule);
-        let (next_occurrences_vec, _) = after_rrule_set.all(10); // Get next 10 to handle skipped ones
+        let (next_occurrences_vec, _) = after_rrule_set.all(50); // Get next 50 to handle many skipped ones
         
         // Use iterator and find for more efficient processing
         for dt in next_occurrences_vec {
@@ -368,6 +370,42 @@ impl RecurrenceManager {
         Ok(normalized)
     }
 
+    /// Calculates a safe maximum number of occurrences for a given time window.
+    /// This prevents memory exhaustion from pathological RRULEs while allowing reasonable use cases.
+    fn calculate_max_safe_occurrences(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> Result<u16, CoreError> {
+        let window_duration = end - start;
+        let days_in_window = window_duration.num_days();
+        
+        // Conservative estimates based on common recurrence patterns:
+        // - Hourly: max 24 per day
+        // - Daily: max 1 per day  
+        // - Weekly: max 1 per 7 days
+        // - Monthly: max 1 per 30 days
+        
+        let max_reasonable_occurrences = if days_in_window <= 0 {
+            // Invalid or zero-duration window
+            1
+        } else if days_in_window <= 1 {
+            // Single day: at most hourly occurrences
+            24
+        } else if days_in_window <= 7 {
+            // One week: at most daily occurrences  
+            days_in_window as u16
+        } else if days_in_window <= 90 {
+            // Up to 3 months: allow daily, but limit growth
+            (days_in_window.min(100)) as u16
+        } else {
+            // Longer windows: assume weekly/monthly patterns
+            (days_in_window / 7).min(500) as u16
+        };
+        
+        // Absolute safety limit: never exceed 2000 occurrences for any window
+        let safe_limit = max_reasonable_occurrences.min(2000);
+        
+        // Return at least 1 to handle edge cases
+        Ok(safe_limit.max(1))
+    }
+
     /// Gets the series associated with this manager.
     pub fn series(&self) -> &TaskSeries {
         &self.series
@@ -406,7 +444,9 @@ impl RecurrenceManager {
             .after(from_rrule)
             .before(end_rrule);
         
-        let (occurrences_vec, _) = bounded_rrule.all((count.min(1000) as u16).min(u16::MAX)); // Limit to requested count or 1000
+        // Safe limit: respect requested count but cap at reasonable maximum
+        let safe_limit = (count.min(500) as u16).max(1);
+        let (occurrences_vec, _) = bounded_rrule.all(safe_limit);
         
         // Pre-allocate with better capacity estimation
         let mut result = Vec::with_capacity(count.min(occurrences_vec.len()));
