@@ -66,13 +66,13 @@ pub struct AddCommand {
     pub name: String,
     
     /// Detailed description of the task
-    #[clap(short, long, help = "Optional description providing additional context")]
+    #[clap(short = 'D', long, help = "Optional description providing additional context")]
     pub description: Option<String>,
     
     /// When the task is due (supports natural language)
     /// 
     /// Examples: "tomorrow", "next friday", "2025-08-20", "in 2 weeks"
-    #[clap(short, long, help = "Due date (natural language or YYYY-MM-DD format)")]
+    #[clap(short = 'd', long, help = "Due date (natural language or YYYY-MM-DD format)")]
     pub due: Option<String>,
     
     /// Project to associate with this task

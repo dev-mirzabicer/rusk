@@ -45,3 +45,5 @@ rstest = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }
 criterion = { workspace = true }
+assert_cmd = "2.0"
+predicates = "3.0"

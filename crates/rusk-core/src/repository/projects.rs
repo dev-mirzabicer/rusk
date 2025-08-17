@@ -51,6 +51,28 @@ impl super::ProjectRepository for SqliteRepository {
     }
 
     async fn delete_project(&self, name: String) -> Result<(), CoreError> {
+        // First, check if the project exists and get its ID
+        let project: Option<Project> = sqlx::query_as("SELECT * FROM projects WHERE name = $1")
+            .bind(&name)
+            .fetch_optional(self.pool())
+            .await?;
+            
+        let project = project.ok_or_else(|| CoreError::NotFound("Project not found".to_string()))?;
+        
+        // Check if there are any tasks associated with this project
+        let task_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tasks WHERE project_id = $1")
+            .bind(project.id)
+            .fetch_one(self.pool())
+            .await?;
+            
+        if task_count.0 > 0 {
+            return Err(CoreError::InvalidInput(format!(
+                "Cannot delete project '{}' because it has {} associated task(s). Delete or move the tasks first.",
+                name, task_count.0
+            )));
+        }
+
+        // Now safe to delete the project
         let result = sqlx::query("DELETE FROM projects WHERE name = $1")
             .bind(name)
             .execute(self.pool())

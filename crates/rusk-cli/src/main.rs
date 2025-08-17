@@ -23,7 +23,11 @@ async fn main() {
         default_filters: vec![], 
         recurrence: config::MaterializationConfig::default(),
     });
-    let db_pool = match db::establish_connection(DATABASE_URL).await {
+    
+    // Allow override of database path for testing
+    let db_path = std::env::var("RUSK_DATABASE_PATH").unwrap_or_else(|_| DATABASE_URL.to_string());
+    
+    let db_pool = match db::establish_connection(&db_path).await {
         Ok(pool) => pool,
         Err(e) => {
             eprintln!("{} {}", "Error:".red().bold(), e);
@@ -201,4 +205,7 @@ fn handle_error(err: anyhow::Error) {
             eprintln!("{} Use --help for command usage information", "Tip:".style(tip_style));
         }
     }
+    
+    // Exit with error code to indicate failure
+    std::process::exit(1);
 }

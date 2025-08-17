@@ -18,6 +18,50 @@ pub enum Query {
     },
 }
 
+impl Query {
+    /// Helper constructor for creating AND queries from multiple filters
+    pub fn and(filters: Vec<Filter>) -> Self {
+        if filters.is_empty() {
+            return Query::Filter(Filter::Status(TaskStatus::Pending));
+        }
+        
+        if filters.len() == 1 {
+            return Query::Filter(filters.into_iter().next().unwrap());
+        }
+        
+        // Create a tree of AND operations
+        let mut iter = filters.into_iter();
+        let first = Query::Filter(iter.next().unwrap());
+        
+        iter.fold(first, |acc, filter| Query::Binary {
+            op: Operator::And,
+            left: Box::new(acc),
+            right: Box::new(Query::Filter(filter)),
+        })
+    }
+    
+    /// Helper constructor for creating OR queries from multiple filters
+    pub fn or(filters: Vec<Filter>) -> Self {
+        if filters.is_empty() {
+            return Query::Filter(Filter::Status(TaskStatus::Pending));
+        }
+        
+        if filters.len() == 1 {
+            return Query::Filter(filters.into_iter().next().unwrap());
+        }
+        
+        // Create a tree of OR operations
+        let mut iter = filters.into_iter();
+        let first = Query::Filter(iter.next().unwrap());
+        
+        iter.fold(first, |acc, filter| Query::Binary {
+            op: Operator::Or,
+            left: Box::new(acc),
+            right: Box::new(Query::Filter(filter)),
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DueDate {
     /// Specific date/time (exact match)

@@ -34,12 +34,12 @@ impl super::TaskRepository for SqliteRepository {
                 timezone: data.timezone.unwrap_or_else(|| "UTC".to_string()),
             };
             
-            // Create series using the domain trait
-            let series = self.create_series(_series_data).await?;
+            // Create series using the transaction-aware method
+            let series = Self::create_series_in_transaction(&mut tx, _series_data).await?;
             
             // Trigger initial materialization for lookahead window
             let (window_start, window_end) = self.materialization_manager().calculate_window_for_filters(&[]);
-            self.refresh_single_series_materialization(series.id, window_start, window_end).await?;
+            Self::refresh_single_series_materialization_in_transaction(&mut tx, series.id, window_start, window_end).await?;
             
             tx.commit().await?;
             Ok(template_task)
