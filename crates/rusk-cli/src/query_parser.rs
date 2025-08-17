@@ -15,6 +15,7 @@ use rusk_core::query::{DueDate, Filter, Operator, Query, TagFilter, TextFilter};
 #[grammar = "filter.pest"]
 pub struct FilterParser;
 
+
 lazy_static::lazy_static! {
     static ref PRATT_PARSER: PrattParser<Rule> = {
         use pest::pratt_parser::{Assoc::*, Op};
@@ -233,7 +234,6 @@ fn build_ast(pairs: Pairs<Rule>) -> Result<Query, QueryParseError> {
                 match inner_rule.as_rule() {
                     Rule::due_filter => {
                         let mut due_inner = inner_rule.into_inner();
-                        let _due_key = due_inner.next().unwrap(); // Skip "due"
                         let date_part = due_inner.next().unwrap();
                         
                         let due_date = match date_part.as_rule() {
@@ -260,9 +260,19 @@ fn build_ast(pairs: Pairs<Rule>) -> Result<Query, QueryParseError> {
                         Ok(Query::Filter(Filter::Tags(tag_filter)))
                     }
                     Rule::text_filter => {
+                        // Extract field name from the original matched text
+                        let full_text = inner_rule.as_str();
                         let mut text_inner = inner_rule.into_inner();
-                        let field_key = text_inner.next().unwrap().as_str();
-                        let filter_part = text_inner.next().unwrap();
+                        let field_key = if full_text.starts_with("name:") {
+                            "name"
+                        } else if full_text.starts_with("description:") {
+                            "description"
+                        } else {
+                            return Err(QueryParseError::InvalidFilter(format!("Unknown text field in: {}", full_text)));
+                        };
+                        let filter_part = text_inner.next().ok_or_else(|| {
+                            QueryParseError::InvalidFilter("Missing value in text filter".to_string())
+                        })?;
                         
                         let text_filter = match filter_part.as_rule() {
                             Rule::text_filter_expr => parse_text_filter(filter_part)?,
@@ -312,6 +322,111 @@ fn build_ast(pairs: Pairs<Rule>) -> Result<Query, QueryParseError> {
                     _ => Err(QueryParseError::UnknownRule(inner_rule.as_rule())),
                 }
             }
+            Rule::term => {
+                // A term can be either a filter_expression or a parenthesized expression
+                let inner_rule = primary.into_inner().next().unwrap();
+                match inner_rule.as_rule() {
+                    Rule::filter_expression => {
+                        // Handle the filter_expression inside the term
+                        let filter_inner = inner_rule.into_inner().next().unwrap();
+                        match filter_inner.as_rule() {
+                            Rule::due_filter => {
+                                let mut due_inner = filter_inner.into_inner();
+                                let date_part = due_inner.next().unwrap();
+                                
+                                let due_date = match date_part.as_rule() {
+                                    Rule::date_comparison => parse_date_comparison(date_part)?,
+                                    _ => parse_date_value(date_part)?,
+                                };
+                                
+                                Ok(Query::Filter(Filter::Due(due_date)))
+                            }
+                            Rule::tag_filter => {
+                                let mut tag_inner = filter_inner.into_inner();
+                                let _tag_key = tag_inner.next().unwrap(); // Skip "tags" or "tag"
+                                let filter_part = tag_inner.next().unwrap();
+                                
+                                let tag_filter = match filter_part.as_rule() {
+                                    Rule::tag_filter_expr => parse_tag_filter(filter_part)?,
+                                    _ => {
+                                        // Simple tag:value format - backward compatibility
+                                        let tag = filter_part.as_str().trim_matches('"').to_string();
+                                        TagFilter::Has(tag)
+                                    }
+                                };
+                                
+                                Ok(Query::Filter(Filter::Tags(tag_filter)))
+                            }
+                            Rule::text_filter => {
+                                // Extract field name from the original matched text
+                                let full_text = filter_inner.as_str();
+                                let mut text_inner = filter_inner.into_inner();
+                                let field_key = if full_text.starts_with("name:") {
+                                    "name"
+                                } else if full_text.starts_with("description:") {
+                                    "description"
+                                } else {
+                                    return Err(QueryParseError::InvalidFilter(format!("Unknown text field in: {}", full_text)));
+                                };
+                                let filter_part = text_inner.next().ok_or_else(|| {
+                                    QueryParseError::InvalidFilter("Missing value in text filter".to_string())
+                                })?;
+                                
+                                let text_filter = match filter_part.as_rule() {
+                                    Rule::text_filter_expr => parse_text_filter(filter_part)?,
+                                    _ => {
+                                        // Simple field:value format - default to contains
+                                        let value = filter_part.as_str().trim_matches('"').to_string();
+                                        TextFilter::Contains(value)
+                                    }
+                                };
+                                
+                                let filter = match field_key {
+                                    "name" => Filter::Name(text_filter),
+                                    "description" => Filter::Description(text_filter),
+                                    _ => return Err(QueryParseError::InvalidFilter(format!(
+                                        "Unknown text field: {}", field_key
+                                    ))),
+                                };
+                                
+                                Ok(Query::Filter(filter))
+                            }
+                            Rule::basic_filter => {
+                                let mut basic_inner = filter_inner.into_inner();
+                                let key = basic_inner.next().unwrap().as_str();
+                                let value = basic_inner.next().unwrap().as_str().trim_matches('"');
+
+                                let filter = match key {
+                                    "project" => Filter::Project(value.to_string()),
+                                    "status" => {
+                                        let status = TaskStatus::from_str(value)
+                                            .map_err(|_| QueryParseError::InvalidStatus(value.to_string()))?;
+                                        Filter::Status(status)
+                                    }
+                                    "priority" => {
+                                        let priority = TaskPriority::from_str(value)
+                                            .map_err(|_| QueryParseError::InvalidPriority(value.to_string()))?;
+                                        Filter::Priority(priority)
+                                    }
+                                    _ => {
+                                        return Err(QueryParseError::InvalidFilter(format!(
+                                            "Unknown filter key: {}",
+                                            key
+                                        )))
+                                    }
+                                };
+                                Ok(Query::Filter(filter))
+                            }
+                            _ => Err(QueryParseError::UnknownRule(filter_inner.as_rule())),
+                        }
+                    }
+                    Rule::expression => {
+                        // Handle parenthesized expression: "(" ~ expression ~ ")"
+                        build_ast(inner_rule.into_inner())
+                    }
+                    _ => Err(QueryParseError::UnknownRule(inner_rule.as_rule())),
+                }
+            }
             Rule::expression => build_ast(primary.into_inner()),
             rule => Err(QueryParseError::UnknownRule(rule)),
         })
@@ -336,6 +451,7 @@ fn build_ast(pairs: Pairs<Rule>) -> Result<Query, QueryParseError> {
         })
         .parse(pairs)
 }
+
 
 pub fn parse_query(input: &str) -> Result<Query, QueryParseError> {
     let trimmed_input = input.trim();
@@ -408,8 +524,9 @@ fn parse_simple_filter(filter_pair: Pair<Rule>) -> Result<Query, QueryParseError
         }
         Rule::due_filter => {
             let mut due_inner = inner_rule.into_inner();
-            let _due_key = due_inner.next().unwrap(); // Skip "due"
-            let date_part = due_inner.next().unwrap();
+            let date_part = due_inner.next().ok_or_else(|| {
+                QueryParseError::InvalidFilter("Missing date value in due filter".to_string())
+            })?;
             
             let due_date = match date_part.as_rule() {
                 Rule::date_comparison => parse_date_comparison(date_part)?,
@@ -435,9 +552,19 @@ fn parse_simple_filter(filter_pair: Pair<Rule>) -> Result<Query, QueryParseError
             Ok(Query::Filter(Filter::Tags(tag_filter)))
         }
         Rule::text_filter => {
+            // Extract field name from the original matched text
+            let full_text = inner_rule.as_str();
             let mut text_inner = inner_rule.into_inner();
-            let field_key = text_inner.next().unwrap().as_str();
-            let filter_part = text_inner.next().unwrap();
+            let field_key = if full_text.starts_with("name:") {
+                "name"
+            } else if full_text.starts_with("description:") {
+                "description"
+            } else {
+                return Err(QueryParseError::InvalidFilter(format!("Unknown text field in: {}", full_text)));
+            };
+            let filter_part = text_inner.next().ok_or_else(|| {
+                QueryParseError::InvalidFilter("Missing value in text filter".to_string())
+            })?;
             
             let text_filter = match filter_part.as_rule() {
                 Rule::text_filter_expr => parse_text_filter(filter_part)?,

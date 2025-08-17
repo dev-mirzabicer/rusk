@@ -61,7 +61,7 @@ tag_op = { "has" | "hasall" | "hasany" | "exact" | "nothas" | "nothasany" }
 tag_filter_expr = { tag_op ~ ":" ~ (tag_list | value) }
 
 // Enhanced filter keys
-filter_key = { "project" | "status" | "priority" | "due" | "name" | "description" }
+filter_key = { "project" | "status" | "priority" | "name" | "description" }
 tag_key = { "tags" | "tag" }
 
 // Filter expressions with specialized handling
