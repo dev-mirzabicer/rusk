@@ -3,7 +3,7 @@
 > A feature-rich, high-quality, robust CLI task management tool with advanced recurring task support
 
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/rusk-task-manager/rusk)
 
 Rusk is a modern, powerful CLI task manager built in Rust that rivals commercial solutions like Todoist. It features sophisticated recurring task management, timezone awareness, natural language processing, and an intuitive command-line interface.
@@ -309,26 +309,6 @@ Complex filter query       ~120ms
 - **Research tasks**: Data collection, analysis, writing schedules
 - **Administrative duties**: Grade submission, committee meetings
 - **Conference planning**: Abstract deadlines, presentation prep
-
-## 🔮 Roadmap
-
-### Short Term (Next Release)
-- [ ] **Web API**: RESTful API for integration with other tools
-- [ ] **Data Export/Import**: JSON, CSV, and calendar format support
-- [ ] **Enhanced Analytics**: Task completion trends and productivity insights
-- [ ] **Mobile Companion**: Simple mobile app for viewing and basic task management
-
-### Medium Term
-- [ ] **Collaboration Features**: Shared projects and task assignment
-- [ ] **Plugin System**: Extensible architecture for custom functionality
-- [ ] **Integration Hub**: Sync with calendar apps, email, and other productivity tools
-- [ ] **Advanced Visualization**: Gantt charts, burndown charts, and timeline views
-
-### Long Term
-- [ ] **AI Assistant**: Natural language task creation and intelligent scheduling
-- [ ] **Team Management**: Multi-user workspaces with permissions and roles
-- [ ] **Enterprise Features**: LDAP integration, audit trails, and compliance tools
-- [ ] **Platform Expansion**: Web interface, desktop GUI, and mobile applications
 
 ## 🤝 Community
 
